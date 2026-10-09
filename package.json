@@ -1,0 +1,10 @@
+{
+  "name": "dfw-maps",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Mon Maps - PWA cartographique et guidage GPS",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  }
+}

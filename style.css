@@ -1,0 +1,1275 @@
+/* ==========================================================================
+   Mon Maps · Premium Design System & Theme Tokens
+   ========================================================================== */
+
+:root {
+  /* Color Palette - Light Mode (Default) */
+  --bg-app: #f8fafc;
+  --surface: rgba(255, 255, 255, 0.84);
+  --surface-solid: #ffffff;
+  --surface-subtle: rgba(241, 245, 249, 0.85);
+  --surface-hover: rgba(226, 232, 240, 0.85);
+  --surface-active: rgba(203, 213, 225, 0.9);
+  
+  --ink: #0f172a;
+  --ink-secondary: #475569;
+  --ink-muted: #64748b;
+  --ink-subtle: #94a3b8;
+  
+  --border: rgba(226, 232, 240, 0.85);
+  --border-strong: rgba(203, 213, 225, 1);
+  --border-glass: rgba(255, 255, 255, 0.7);
+
+  /* Accents */
+  --primary: #2563eb;
+  --primary-hover: #1d4ed8;
+  --primary-glow: rgba(37, 99, 235, 0.28);
+  --primary-gradient: linear-gradient(135deg, #3b82f6 0%, #2563eb 50%, #1d4ed8 100%);
+  
+  --accent-from: #10b981;
+  --accent-from-glow: rgba(16, 185, 129, 0.25);
+  --accent-to: #f43f5e;
+  --accent-to-glow: rgba(244, 63, 94, 0.25);
+  
+  /* Mode colors */
+  --mode-car: #2563eb;
+  --mode-bike: #059669;
+  --mode-foot: #ea580c;
+  
+  /* Shadows & Glassmorphism */
+  --shadow-sm: 0 2px 6px -1px rgba(15, 23, 42, 0.08), 0 1px 3px -1px rgba(15, 23, 42, 0.04);
+  --shadow-md: 0 8px 24px -4px rgba(15, 23, 42, 0.12), 0 4px 10px -2px rgba(15, 23, 42, 0.05);
+  --shadow-xl: 0 20px 45px -8px rgba(15, 23, 42, 0.18), 0 8px 18px -4px rgba(15, 23, 42, 0.08);
+  --shadow-glow: 0 0 20px -3px var(--primary-glow);
+  --blur: blur(24px) saturate(190%);
+
+  /* Typography & Radii */
+  font-family: "Figtree", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --radius-xs: 8px;
+  --radius-sm: 10px;
+  --radius-md: 14px;
+  --radius-lg: 18px;
+  --radius-xl: 24px;
+  --radius-full: 9999px;
+  
+  --ease: cubic-bezier(0.16, 1, 0.3, 1);
+  --transition-fast: 160ms var(--ease);
+  --transition-normal: 250ms var(--ease);
+}
+
+/* Dark Mode Overrides */
+[data-theme="dark"],
+html[data-theme="auto"] {
+  @media (prefers-color-scheme: dark) {
+    --bg-app: #090d16;
+    --surface: rgba(15, 23, 42, 0.86);
+    --surface-solid: #0f172a;
+    --surface-subtle: rgba(30, 41, 59, 0.8);
+    --surface-hover: rgba(51, 65, 85, 0.8);
+    --surface-active: rgba(71, 85, 105, 0.85);
+
+    --ink: #f8fafc;
+    --ink-secondary: #cbd5e1;
+    --ink-muted: #94a3b8;
+    --ink-subtle: #64748b;
+
+    --border: rgba(51, 65, 85, 0.7);
+    --border-strong: rgba(71, 85, 105, 0.9);
+    --border-glass: rgba(255, 255, 255, 0.12);
+
+    --primary: #3b82f6;
+    --primary-hover: #60a5fa;
+    --primary-glow: rgba(59, 130, 246, 0.4);
+    --primary-gradient: linear-gradient(135deg, #60a5fa 0%, #3b82f6 50%, #2563eb 100%);
+
+    --shadow-sm: 0 2px 6px -1px rgba(0, 0, 0, 0.4);
+    --shadow-md: 0 8px 24px -4px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.05);
+    --shadow-xl: 0 24px 50px -10px rgba(0, 0, 0, 0.7), 0 0 0 1px rgba(255, 255, 255, 0.08);
+  }
+}
+
+[data-theme="dark"] {
+  --bg-app: #090d16;
+  --surface: rgba(15, 23, 42, 0.86);
+  --surface-solid: #0f172a;
+  --surface-subtle: rgba(30, 41, 59, 0.8);
+  --surface-hover: rgba(51, 65, 85, 0.8);
+  --surface-active: rgba(71, 85, 105, 0.85);
+
+  --ink: #f8fafc;
+  --ink-secondary: #cbd5e1;
+  --ink-muted: #94a3b8;
+  --ink-subtle: #64748b;
+
+  --border: rgba(51, 65, 85, 0.7);
+  --border-strong: rgba(71, 85, 105, 0.9);
+  --border-glass: rgba(255, 255, 255, 0.12);
+
+  --primary: #3b82f6;
+  --primary-hover: #60a5fa;
+  --primary-glow: rgba(59, 130, 246, 0.4);
+  --primary-gradient: linear-gradient(135deg, #60a5fa 0%, #3b82f6 50%, #2563eb 100%);
+
+  --shadow-sm: 0 2px 6px -1px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 8px 24px -4px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.05);
+  --shadow-xl: 0 24px 50px -10px rgba(0, 0, 0, 0.7), 0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+
+/* ==========================================================================
+   Global Reset & Layout
+   ========================================================================== */
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  -webkit-tap-highlight-color: transparent;
+}
+
+html, body {
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+  background-color: var(--bg-app);
+  color: var(--ink);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+#map {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 1;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+/* Custom Scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: var(--radius-full);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--ink-muted);
+}
+
+/* ==========================================================================
+   Main Route Panel
+   ========================================================================== */
+
+#panel {
+  position: absolute;
+  z-index: 10;
+  top: 12px;
+  left: 12px;
+  right: 12px;
+  max-height: calc(100% - 24px);
+  overflow-y: auto;
+  overflow-x: hidden;
+  
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  
+  background: var(--surface);
+  backdrop-filter: var(--blur);
+  -webkit-backdrop-filter: var(--blur);
+  border: 1px solid var(--border-glass);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-xl);
+  
+  transition: transform var(--transition-normal), opacity var(--transition-normal);
+}
+
+@media (max-width: 719px) {
+  #panel {
+    top: 8px;
+    left: 8px;
+    right: 8px;
+    max-height: 56vh;
+    padding: 12px;
+    gap: 10px;
+    border-radius: var(--radius-lg);
+  }
+  #fab {
+    right: 12px;
+    bottom: 16px;
+  }
+}
+
+@media (min-width: 720px) {
+  #panel {
+    top: 16px;
+    left: 16px;
+    right: auto;
+    width: 400px;
+    max-height: calc(100% - 32px);
+    padding: 18px;
+    gap: 14px;
+  }
+}
+
+/* Panel Header & Branding */
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-bottom: 4px;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.brand-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-sm);
+  background: var(--primary-gradient);
+  color: #ffffff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 4px 12px var(--primary-glow);
+}
+
+.brand-icon svg {
+  width: 20px;
+  height: 20px;
+}
+
+.brand-text h1 {
+  font-size: 17px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  color: var(--ink);
+  line-height: 1.1;
+}
+
+.brand-badge {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--primary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.icon-btn {
+  width: 34px;
+  height: 34px;
+  border-radius: var(--radius-full);
+  background: var(--surface-subtle);
+  border: 1px solid var(--border);
+  color: var(--ink-secondary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.icon-btn:hover {
+  background: var(--surface-hover);
+  color: var(--ink);
+  transform: translateY(-1px);
+}
+
+.icon-btn:active {
+  transform: scale(0.95);
+}
+
+.icon-btn svg {
+  width: 17px;
+  height: 17px;
+}
+
+/* Theme Toggle Icons */
+[data-theme="dark"] .sun-icon { display: block; }
+[data-theme="dark"] .moon-icon { display: none; }
+[data-theme="light"] .sun-icon { display: none; }
+[data-theme="light"] .moon-icon { display: block; }
+html[data-theme="auto"] .sun-icon { display: none; }
+html[data-theme="auto"] .moon-icon { display: block; }
+
+@media (prefers-color-scheme: dark) {
+  html[data-theme="auto"] .sun-icon { display: block; }
+  html[data-theme="auto"] .moon-icon { display: none; }
+}
+
+/* ==========================================================================
+   Route Input Card & Connected Timeline
+   ========================================================================== */
+
+.route-inputs-card {
+  position: relative;
+  display: flex;
+  gap: 10px;
+  background: var(--surface-subtle);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 12px 10px;
+}
+
+/* Left timeline connector line */
+.timeline-connector {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  padding: 16px 0;
+  flex: none;
+}
+
+.connector-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex: none;
+  position: relative;
+  transition: transform var(--transition-fast);
+}
+
+.connector-dot.from-dot {
+  background: var(--accent-from);
+  box-shadow: 0 0 0 3px var(--accent-from-glow);
+}
+
+.connector-dot.to-dot {
+  background: var(--accent-to);
+  box-shadow: 0 0 0 3px var(--accent-to-glow);
+}
+
+.connector-line {
+  flex: 1;
+  width: 2px;
+  min-height: 24px;
+  background: repeating-linear-gradient(
+    to bottom,
+    var(--border-strong) 0,
+    var(--border-strong) 4px,
+    transparent 4px,
+    transparent 8px
+  );
+  margin: 4px 0;
+}
+
+.inputs-stack {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.field {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.input-wrapper {
+  position: relative;
+  flex: 1;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+input {
+  width: 100%;
+  height: 42px;
+  padding: 0 34px 0 12px;
+  font: inherit;
+  font-size: 14.5px;
+  font-weight: 500;
+  color: var(--ink);
+  background: var(--surface-solid);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  outline: none;
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.04);
+  transition: all var(--transition-fast);
+}
+
+input::placeholder {
+  color: var(--ink-subtle);
+  font-weight: 400;
+}
+
+input:focus {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px var(--primary-glow), inset 0 1px 2px rgba(0, 0, 0, 0.02);
+}
+
+.clear-btn {
+  position: absolute;
+  right: 8px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--surface-hover);
+  border: none;
+  color: var(--ink-muted);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  padding: 0;
+  transition: all var(--transition-fast);
+}
+
+.clear-btn:hover {
+  background: var(--surface-active);
+  color: var(--ink);
+  transform: scale(1.1);
+}
+
+.clear-btn svg {
+  width: 12px;
+  height: 12px;
+}
+
+.field-action-btn {
+  flex: none;
+  width: 42px;
+  height: 42px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-solid);
+  border: 1px solid var(--border);
+  color: var(--ink-secondary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.field-action-btn:hover {
+  background: var(--surface-hover);
+  color: var(--primary);
+  border-color: var(--border-strong);
+  transform: translateY(-1px);
+}
+
+.field-action-btn:active {
+  transform: scale(0.95);
+}
+
+.field-action-btn svg {
+  width: 18px;
+  height: 18px;
+  transition: transform var(--transition-normal);
+}
+
+.field-action-btn.is-active {
+  color: var(--primary);
+  border-color: var(--primary);
+  box-shadow: 0 0 0 2px var(--primary-glow);
+}
+
+/* ==========================================================================
+   Photon Suggestions Flyout
+   ========================================================================== */
+
+.suggest {
+  position: absolute;
+  z-index: 100;
+  top: 48px;
+  left: 0;
+  right: 0;
+  max-height: 260px;
+  overflow-y: auto;
+  margin: 0;
+  padding: 6px;
+  list-style: none;
+  
+  background: var(--surface);
+  backdrop-filter: var(--blur);
+  -webkit-backdrop-filter: var(--blur);
+  border: 1px solid var(--border-glass);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-xl);
+  animation: slideFadeDown 180ms var(--ease);
+}
+
+@keyframes slideFadeDown {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.suggest li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 10px;
+  border-radius: var(--radius-sm);
+  font-size: 13.5px;
+  color: var(--ink);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.suggest li:hover {
+  background: var(--surface-hover);
+  transform: translateX(2px);
+}
+
+.suggest-item-icon {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-xs);
+  background: var(--surface-subtle);
+  border: 1px solid var(--border);
+  color: var(--primary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.suggest-item-icon svg {
+  width: 14px;
+  height: 14px;
+}
+
+.suggest-item-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.suggest-item-main {
+  font-weight: 600;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.suggest-item-sub {
+  font-size: 12px;
+  color: var(--ink-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ==========================================================================
+   Transport Modes Segmented Control
+   ========================================================================== */
+
+#modes {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+  padding: 4px;
+  background: var(--surface-subtle);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.mode-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  padding: 8px 6px;
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--ink-secondary);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  user-select: none;
+}
+
+.mode-btn:hover {
+  background: var(--surface-hover);
+  color: var(--ink);
+  transform: translateY(-1px);
+}
+
+.mode-btn:active {
+  transform: scale(0.97);
+}
+
+.mode-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+}
+
+.mode-icon svg {
+  width: 20px;
+  height: 20px;
+  stroke-width: 2.2;
+}
+
+.mode-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.mode-time {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--ink-muted);
+  line-height: 1.2;
+  transition: color var(--transition-fast);
+}
+
+/* Active Mode Pill */
+.mode-btn[aria-pressed="true"] {
+  background: var(--surface-solid);
+  color: var(--ink);
+  border-color: var(--border-strong);
+  box-shadow: var(--shadow-sm);
+}
+
+.mode-btn[data-mode="car"][aria-pressed="true"] .mode-icon,
+.mode-btn[data-mode="car"][aria-pressed="true"] .mode-time {
+  color: var(--mode-car);
+}
+
+.mode-btn[data-mode="bike"][aria-pressed="true"] .mode-icon,
+.mode-btn[data-mode="bike"][aria-pressed="true"] .mode-time {
+  color: var(--mode-bike);
+}
+
+.mode-btn[data-mode="foot"][aria-pressed="true"] .mode-icon,
+.mode-btn[data-mode="foot"][aria-pressed="true"] .mode-time {
+  color: var(--mode-foot);
+}
+
+/* Status text */
+#status {
+  margin: 2px 4px 0;
+  font-size: 13px;
+  color: var(--ink-muted);
+  line-height: 1.4;
+  text-align: center;
+}
+
+#status:empty {
+  display: none;
+}
+
+/* ==========================================================================
+   Route Overview & Turn-by-Turn Card
+   ========================================================================== */
+
+#route-box {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 2px;
+  animation: slideFadeDown 220ms var(--ease);
+}
+
+.route-overview-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px;
+  background: var(--surface-subtle);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.route-stats {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.stat-primary {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.duration-hero {
+  font-size: 24px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  color: var(--primary);
+}
+
+.eta-pill {
+  font-size: 12.5px;
+  font-weight: 700;
+  padding: 3px 8px;
+  border-radius: var(--radius-full);
+  background: var(--surface-solid);
+  border: 1px solid var(--border);
+  color: var(--ink-secondary);
+}
+
+.stat-secondary {
+  display: flex;
+  align-items: center;
+}
+
+.distance-hero {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--ink-secondary);
+}
+
+/* Start Button */
+.btn-primary-action {
+  width: 100%;
+  height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  
+  font: inherit;
+  font-size: 15px;
+  font-weight: 700;
+  color: #ffffff;
+  
+  background: var(--primary-gradient);
+  border: none;
+  border-radius: var(--radius-md);
+  box-shadow: 0 6px 18px var(--primary-glow);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.btn-primary-action:hover {
+  filter: brightness(1.08);
+  box-shadow: 0 8px 24px var(--primary-glow);
+  transform: translateY(-1px);
+}
+
+.btn-primary-action:active {
+  transform: scale(0.98);
+}
+
+.start-icon {
+  width: 18px;
+  height: 18px;
+}
+
+/* Collapsible Steps Accordion */
+#steps-wrap {
+  background: var(--surface-solid);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+#summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+  font-weight: 700;
+  font-size: 14px;
+  color: var(--ink);
+  cursor: pointer;
+  user-select: none;
+  transition: background var(--transition-fast);
+}
+
+#summary:hover {
+  background: var(--surface-hover);
+}
+
+#summary::-webkit-details-marker {
+  display: none;
+}
+
+.chevron {
+  width: 18px;
+  height: 18px;
+  color: var(--ink-muted);
+  transition: transform var(--transition-normal);
+}
+
+#steps-wrap[open] .chevron {
+  transform: rotate(180deg);
+}
+
+/* Steps List */
+#steps {
+  list-style: none;
+  padding: 6px 12px 12px;
+  max-height: 34vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+#steps li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 4px;
+  font-size: 13.5px;
+  color: var(--ink);
+  border-top: 1px solid var(--border);
+}
+
+#steps li:first-child {
+  border-top: none;
+}
+
+.step-info {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
+}
+
+.step-maneuver-icon {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  border-radius: var(--radius-xs);
+  background: var(--surface-subtle);
+  border: 1px solid var(--border);
+  color: var(--primary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.step-maneuver-icon svg {
+  width: 15px;
+  height: 15px;
+}
+
+.step-text {
+  flex: 1;
+  line-height: 1.35;
+  font-weight: 500;
+}
+
+.step-dist-pill {
+  flex: none;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--ink-muted);
+  background: var(--surface-subtle);
+  padding: 2px 7px;
+  border-radius: var(--radius-full);
+}
+
+/* ==========================================================================
+   Floating Action Buttons (FAB)
+   ========================================================================== */
+
+#fab {
+  position: absolute;
+  z-index: 10;
+  right: 14px;
+  bottom: 24px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 10px;
+  transition: bottom var(--transition-normal);
+}
+
+.fab-btn {
+  font: inherit;
+  color: var(--ink);
+  background: var(--surface);
+  backdrop-filter: var(--blur);
+  -webkit-backdrop-filter: var(--blur);
+  border: 1px solid var(--border-glass);
+  box-shadow: var(--shadow-md);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  transition: all var(--transition-fast);
+}
+
+.fab-btn:hover {
+  background: var(--surface-solid);
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-xl);
+}
+
+.fab-btn:active {
+  transform: scale(0.95);
+}
+
+.fab-btn.round {
+  width: 46px;
+  height: 46px;
+  border-radius: var(--radius-full);
+}
+
+.fab-btn.round svg {
+  width: 20px;
+  height: 20px;
+}
+
+.fab-btn.pill {
+  height: 42px;
+  padding: 0 16px;
+  border-radius: var(--radius-full);
+  font-size: 13.5px;
+  font-weight: 700;
+}
+
+.fab-btn.pill svg {
+  width: 17px;
+  height: 17px;
+}
+
+#layers[aria-pressed="true"] {
+  background: var(--primary);
+  color: #ffffff;
+  border-color: var(--primary);
+  box-shadow: 0 4px 14px var(--primary-glow);
+}
+
+.install-pill {
+  background: var(--primary-gradient);
+  color: #ffffff;
+  border-color: transparent;
+  box-shadow: 0 6px 18px var(--primary-glow);
+}
+
+/* ==========================================================================
+   Turn-by-Turn Navigation HUD (Banner & Navbar)
+   ========================================================================== */
+
+#banner {
+  display: none;
+  position: absolute;
+  z-index: 20;
+  top: calc(12px + env(safe-area-inset-top, 0px));
+  left: 12px;
+  right: 12px;
+  align-items: center;
+  gap: 14px;
+  padding: 16px 18px;
+  
+  color: #ffffff;
+  background: rgba(15, 23, 42, 0.92);
+  backdrop-filter: var(--blur);
+  -webkit-backdrop-filter: var(--blur);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: var(--radius-xl);
+  box-shadow: 0 20px 45px -8px rgba(0, 0, 0, 0.6);
+  animation: slideFadeDown 250ms var(--ease);
+}
+
+@media (min-width: 720px) {
+  #banner {
+    left: 16px;
+    right: auto;
+    width: 420px;
+    top: 16px;
+  }
+}
+
+.banner-icon-badge {
+  flex: none;
+  width: 50px;
+  height: 50px;
+  border-radius: var(--radius-md);
+  background: var(--primary-gradient);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 4px 16px var(--primary-glow);
+}
+
+.banner-icon-badge svg {
+  width: 28px;
+  height: 28px;
+  stroke-width: 2.5;
+}
+
+.banner-content {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+#banner b {
+  font-size: 28px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  line-height: 1.1;
+}
+
+#banner-text {
+  font-size: 15px;
+  font-weight: 600;
+  color: #cbd5e1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-top: 2px;
+}
+
+#navbar {
+  display: none;
+  position: absolute;
+  z-index: 20;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 20px calc(14px + env(safe-area-inset-bottom, 0px));
+  
+  background: var(--surface);
+  backdrop-filter: var(--blur);
+  -webkit-backdrop-filter: var(--blur);
+  border-top: 1px solid var(--border-glass);
+  box-shadow: 0 -8px 30px rgba(0, 0, 0, 0.15);
+}
+
+.navbar-eta-card {
+  display: flex;
+  flex-direction: column;
+}
+
+#eta {
+  font-size: 20px;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+  color: var(--primary);
+  line-height: 1.1;
+}
+
+.eta-sub {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink-muted);
+}
+
+.navbar-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+#mute svg {
+  width: 20px;
+  height: 20px;
+}
+
+#mute .sound-off {
+  display: none;
+}
+
+#mute[aria-pressed="false"] .sound-on {
+  display: none;
+}
+
+#mute[aria-pressed="false"] .sound-off {
+  display: block;
+}
+
+.btn-stop-nav {
+  height: 44px;
+  padding: 0 18px;
+  border-radius: var(--radius-full);
+  background: #f43f5e;
+  border: none;
+  color: #ffffff;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  box-shadow: 0 4px 14px rgba(244, 63, 94, 0.35);
+  transition: all var(--transition-fast);
+}
+
+.btn-stop-nav:hover {
+  background: #e11d48;
+  transform: translateY(-1px);
+}
+
+.btn-stop-nav:active {
+  transform: scale(0.96);
+}
+
+.btn-stop-nav svg {
+  width: 16px;
+  height: 16px;
+}
+
+/* Navigating active state */
+body.navigating #panel {
+  display: none;
+}
+body.navigating #banner,
+body.navigating #navbar {
+  display: flex;
+}
+body.navigating #fab {
+  bottom: 96px;
+}
+body.navigating .maplibregl-ctrl-bottom-right {
+  bottom: 84px;
+}
+
+/* ==========================================================================
+   Map Elements: User Pulse Marker & Controls
+   ========================================================================== */
+
+.me {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: #2563eb;
+  border: 3.5px solid #ffffff;
+  box-shadow: 0 0 0 0 rgba(37, 99, 235, 0.6), 0 3px 10px rgba(0, 0, 0, 0.4);
+  animation: radarPulse 2s cubic-bezier(0.24, 0, 0.38, 1) infinite;
+  cursor: pointer;
+}
+
+@keyframes radarPulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(37, 99, 235, 0.6), 0 3px 10px rgba(0, 0, 0, 0.4);
+  }
+  70% {
+    box-shadow: 0 0 0 22px rgba(37, 99, 235, 0), 0 3px 10px rgba(0, 0, 0, 0.4);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(37, 99, 235, 0), 0 3px 10px rgba(0, 0, 0, 0.4);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .me {
+    animation: none;
+  }
+}
+
+/* MapLibre Controls Polish */
+.maplibregl-ctrl-group {
+  background: var(--surface) !important;
+  backdrop-filter: var(--blur) !important;
+  -webkit-backdrop-filter: var(--blur) !important;
+  border: 1px solid var(--border-glass) !important;
+  border-radius: var(--radius-md) !important;
+  box-shadow: var(--shadow-md) !important;
+  overflow: hidden;
+}
+
+.maplibregl-ctrl-group button {
+  width: 36px !important;
+  height: 36px !important;
+  border-bottom: 1px solid var(--border) !important;
+  transition: background var(--transition-fast) !important;
+}
+
+.maplibregl-ctrl-group button:last-child {
+  border-bottom: none !important;
+}
+
+.maplibregl-ctrl-group button:hover {
+  background-color: var(--surface-hover) !important;
+}
+
+.maplibregl-ctrl-bottom-right {
+  right: 14px !important;
+  bottom: 84px !important;
+  transition: bottom var(--transition-normal);
+}
+
+/* ==========================================================================
+   Custom Map Pins (Origin & Destination)
+   ========================================================================== */
+
+.custom-marker {
+  position: relative;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  filter: drop-shadow(0 4px 8px rgba(0, 0, 0, 0.35));
+  transition: transform var(--transition-fast);
+}
+
+.custom-marker:hover {
+  transform: scale(1.15) translateY(-2px);
+}
+
+.custom-marker .marker-pin {
+  width: 26px;
+  height: 26px;
+  border-radius: 50% 50% 50% 0;
+  transform: rotate(-45deg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid #ffffff;
+}
+
+.custom-marker .marker-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #ffffff;
+  transform: rotate(45deg);
+}
+
+.custom-marker.marker-from .marker-pin {
+  background: #10b981;
+  box-shadow: 0 0 12px rgba(16, 185, 129, 0.6);
+}
+
+.custom-marker.marker-to .marker-pin {
+  background: #f43f5e;
+  box-shadow: 0 0 12px rgba(244, 63, 94, 0.6);
+}
+
