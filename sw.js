@@ -1,11 +1,21 @@
 "use strict";
 
-const VERSION = "mon-maps-v2";
+const VERSION = "mon-maps-v7";
 const TILE_CACHE = "mon-maps-tiles";
-const MAX_TILES = 400;
+const MAX_TILES = 800;
 const SHELL = ["./", "index.html", "style.css", "app.js", "manifest.webmanifest", "icons/icon-192.png", "icons/icon-512.png"];
-const TILE_HOSTS = ["tile.openstreetmap.org", "server.arcgisonline.com"];
 const LIB_HOSTS = ["unpkg.com", "fonts.googleapis.com", "fonts.gstatic.com"];
+
+function isTileHost(hostname) {
+  return (
+    hostname.endsWith("openstreetmap.org") ||
+    hostname.endsWith("openstreetmap.fr") ||
+    hostname.endsWith("opentopomap.org") ||
+    hostname.endsWith("arcgisonline.com") ||
+    hostname.endsWith("openfreemap.org") ||
+    hostname.includes("amazonaws.com")
+  );
+}
 
 self.addEventListener("install", (e) => {
   e.waitUntil(
@@ -28,14 +38,13 @@ self.addEventListener("fetch", (e) => {
   if (req.method !== "GET") return;
   const url = new URL(req.url);
 
-  if (TILE_HOSTS.includes(url.hostname)) {
+  if (isTileHost(url.hostname)) {
     e.respondWith(tile(req));
   } else if (url.origin === location.origin || LIB_HOSTS.includes(url.hostname)) {
     e.respondWith(networkFirstApp(req));
   }
 });
 
-// Fichiers de l'appli : réseau d'abord pour avoir la dernière version, cache si hors-ligne
 async function networkFirstApp(req) {
   try {
     const res = await fetch(req);
@@ -51,7 +60,6 @@ async function networkFirstApp(req) {
   }
 }
 
-// Tuiles de carte : cache d'abord, puis réseau avec quota
 async function tile(req) {
   const cache = await caches.open(TILE_CACHE);
   const hit = await cache.match(req);

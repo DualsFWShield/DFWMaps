@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>Mon Maps · Navigation & Itinéraires</title>
-  <meta name="description" content="Application cartographique moderne, calcul d'itinéraires et guidage vocal en temps réel.">
+  <title>Mon Maps · Navigation, OpenFreeMap 3D & Compteur Vitesse</title>
+  <meta name="description" content="Application cartographique moderne : OpenFreeMap clair, sombre et 3D, guidage avec compteur km/h et limites de vitesse réelles.">
   <meta name="theme-color" content="#0f172a">
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="icons/icon-192.png">
@@ -14,30 +14,72 @@
   <meta name="apple-mobile-web-app-title" content="Mon Maps">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
+  <!-- Conteneur Carte -->
   <div id="map"></div>
 
-  <!-- Panneau principal d'itinéraire -->
-  <section id="panel" aria-label="Calcul d'itinéraire">
+  <!-- Barre de recherche supérieure style Google Maps (mode exploration) -->
+  <div id="top-search-bar" class="search-bar-floating">
+    <div class="search-input-pill">
+      <div class="search-icon-wrap" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+        </svg>
+      </div>
+      <input id="quick-search-input" placeholder="Rechercher une adresse, un lieu…" autocomplete="off" aria-label="Rechercher une adresse">
+      <button id="quick-clear-btn" class="clear-btn" type="button" aria-label="Effacer la recherche" hidden>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M18 6L6 18M6 6l12 12"/></svg>
+      </button>
+      <button id="open-directions-btn" class="btn-directions-shortcut" type="button" title="Calculer un itinéraire">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+          <polygon points="3 11 22 2 13 21 11 13 3 11" fill="currentColor"/>
+        </svg>
+        <span>Itinéraire</span>
+      </button>
+    </div>
+    <ul id="quick-search-list" class="suggest" hidden></ul>
+
+    <!-- Chips de catégories rapides -->
+    <div class="quick-category-chips">
+      <button type="button" class="category-chip" data-query="restaurant">🍴 Restaurants</button>
+      <button type="button" class="category-chip" data-query="fuel">⛽ Carburant</button>
+      <button type="button" class="category-chip" data-query="parking">🅿️ Parkings</button>
+      <button type="button" class="category-chip" data-query="hotel">🏨 Hôtels</button>
+      <button type="button" class="category-chip" data-query="supermarket">🛒 Boutiques</button>
+    </div>
+  </div>
+
+  <!-- Panneau principal d'itinéraire (collapsible / réductible) -->
+  <section id="panel" class="route-panel" aria-label="Calcul d'itinéraire" hidden>
     <header class="panel-header">
-      <div class="brand">
-        <div class="brand-icon" aria-hidden="true">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z"/>
-            <circle cx="12" cy="9" r="2.5"/>
+      <div class="header-left">
+        <button id="close-panel-btn" class="icon-btn" type="button" aria-label="Fermer le mode itinéraire" title="Retour à la carte">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/>
           </svg>
-        </div>
+        </button>
         <div class="brand-text">
-          <h1>Mon Maps</h1>
-          <span class="brand-badge">GPS & Trajets</span>
+          <h1>Itinéraire</h1>
+          <span class="brand-badge">Multi-étapes & 3D</span>
         </div>
       </div>
       <div class="header-actions">
-        <button id="theme-toggle" class="icon-btn" type="button" aria-label="Changer de thème" title="Changer de thème">
+        <button id="cancel-route-btn" class="icon-btn danger-hover" type="button" aria-label="Annuler l'itinéraire" title="Annuler et effacer l'itinéraire">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="3 6 5 6 21 6"/>
+            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+          </svg>
+        </button>
+        <button id="minimize-panel-btn" class="icon-btn" type="button" aria-label="Réduire le panneau" title="Réduire pour voir la carte">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="5" y1="12" x2="19" y2="12"/>
+          </svg>
+        </button>
+        <button id="theme-toggle" class="icon-btn" type="button" aria-label="Changer de thème (Clair / Sombre)" title="Changer de thème (Clair / Sombre)">
           <svg class="sun-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/>
           </svg>
@@ -48,22 +90,24 @@
       </div>
     </header>
 
+    <!-- Zone des adresses avec support multi-étapes -->
     <div class="route-inputs-card">
       <div class="timeline-connector" aria-hidden="true">
         <div class="connector-dot from-dot"></div>
-        <div class="connector-line"></div>
+        <div id="timeline-connector-body" class="connector-line"></div>
         <div class="connector-dot to-dot"></div>
       </div>
 
       <div class="inputs-stack">
-        <div class="field">
+        <!-- Départ -->
+        <div class="field" id="field-from">
           <div class="input-wrapper">
-            <input id="from" placeholder="Point de départ ou adresse…" autocomplete="off" aria-label="Point de départ">
+            <input id="from" placeholder="Départ…" autocomplete="off" aria-label="Point de départ">
             <button id="clear-from" class="clear-btn" type="button" aria-label="Effacer le départ" title="Effacer" hidden>
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M18 6L6 18M6 6l12 12"/></svg>
             </button>
           </div>
-          <button id="locate" class="field-action-btn" type="button" aria-label="Utiliser ma position actuelle" title="Ma position actuelle">
+          <button id="locate" class="field-action-btn" type="button" aria-label="Ma position actuelle" title="Ma position actuelle">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
               <circle cx="12" cy="12" r="7"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/><circle cx="12" cy="12" r="2" fill="currentColor"/>
             </svg>
@@ -71,9 +115,23 @@
           <ul id="from-list" class="suggest" hidden></ul>
         </div>
 
-        <div class="field">
+        <!-- Conteneur dynamique des étapes intermédiaires -->
+        <div id="waypoints-container"></div>
+
+        <!-- Bouton d'ajout d'étape -->
+        <div class="waypoint-add-row">
+          <button id="add-waypoint-btn" type="button" class="btn-add-step">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+              <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+            </svg>
+            <span>Ajouter une étape</span>
+          </button>
+        </div>
+
+        <!-- Arrivée -->
+        <div class="field" id="field-to">
           <div class="input-wrapper">
-            <input id="to" placeholder="Destination d'arrivée…" autocomplete="off" aria-label="Destination d'arrivée">
+            <input id="to" placeholder="Destination…" autocomplete="off" aria-label="Destination finale">
             <button id="clear-to" class="clear-btn" type="button" aria-label="Effacer l'arrivée" title="Effacer" hidden>
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M18 6L6 18M6 6l12 12"/></svg>
             </button>
@@ -88,6 +146,7 @@
       </div>
     </div>
 
+    <!-- Choix du mode de transport -->
     <div id="modes" role="tablist" aria-label="Mode de transport">
       <button type="button" data-mode="car" role="tab" aria-pressed="true" aria-selected="true" class="mode-btn">
         <span class="mode-icon" aria-hidden="true">
@@ -121,8 +180,34 @@
       </button>
     </div>
 
+    <!-- Critères d'optimisation réels (Rapide, Court, Économique) -->
+    <div id="criteria-selector" class="criteria-bar" hidden>
+      <button type="button" class="criteria-btn" data-criterion="fastest" aria-pressed="true">
+        <span class="crit-icon">⚡</span>
+        <div class="crit-details">
+          <b>Rapide</b>
+          <small id="crit-fastest-sub">–</small>
+        </div>
+      </button>
+      <button type="button" class="criteria-btn" data-criterion="shortest" aria-pressed="false">
+        <span class="crit-icon">📏</span>
+        <div class="crit-details">
+          <b>Court</b>
+          <small id="crit-shortest-sub">–</small>
+        </div>
+      </button>
+      <button type="button" class="criteria-btn" data-criterion="eco" aria-pressed="false">
+        <span class="crit-icon">🌿</span>
+        <div class="crit-details">
+          <b>Économique</b>
+          <small id="crit-eco-sub">–</small>
+        </div>
+      </button>
+    </div>
+
     <p id="status" role="status">Cherchez une adresse ou touchez la carte pour placer un point.</p>
 
+    <!-- Fiche d'itinéraire calculé -->
     <div id="route-box" hidden>
       <div class="route-overview-card">
         <div class="route-stats">
@@ -132,18 +217,27 @@
           </div>
           <div class="stat-secondary">
             <span id="route-distance-hero" class="distance-hero">-- km</span>
+            <span id="route-fuel-hero" class="fuel-pill" hidden>--</span>
           </div>
         </div>
 
-        <button id="start" type="button" class="btn-primary-action">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="start-icon" aria-hidden="true">
-            <polygon points="5 3 19 12 5 21 5 3" fill="currentColor"/>
-          </svg>
-          <span>Démarrer le guidage</span>
-        </button>
+        <div class="route-actions-row">
+          <button id="start" type="button" class="btn-primary-action">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="start-icon" aria-hidden="true">
+              <polygon points="5 3 19 12 5 21 5 3" fill="currentColor"/>
+            </svg>
+            <span>Démarrer le guidage</span>
+          </button>
+          <button id="cancel-route-action-btn" type="button" class="btn-cancel-action" title="Annuler ce trajet" aria-label="Annuler ce trajet">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+              <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+            </svg>
+            <span>Annuler</span>
+          </button>
+        </div>
       </div>
 
-      <details id="steps-wrap" open>
+      <details id="steps-wrap">
         <summary id="summary">
           <span class="summary-label">Feuille de route</span>
           <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -155,7 +249,44 @@
     </div>
   </section>
 
-  <!-- Bannière de guidage en direct (HUD) -->
+  <!-- Carte réduite en bas d'écran (style Google Maps : permet de voir toute la carte) -->
+  <div id="minimized-route-bar" class="minimized-bar" hidden>
+    <div class="min-left">
+      <span id="min-mode-icon" class="min-badge">🚗</span>
+      <div class="min-info">
+        <b id="min-duration">-- min</b>
+        <span id="min-meta">-- km · arrivée --:--</span>
+      </div>
+    </div>
+    <div class="min-right">
+      <button id="min-start-btn" type="button" class="btn-mini-start">Démarrer</button>
+      <button id="restore-panel-btn" type="button" class="icon-btn" title="Agrandir la fiche" aria-label="Agrandir la fiche">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="18 15 12 9 6 15"/>
+        </svg>
+      </button>
+      <button id="min-cancel-btn" class="icon-btn danger-hover" type="button" title="Annuler le trajet" aria-label="Annuler le trajet">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+        </svg>
+      </button>
+    </div>
+  </div>
+
+  <!-- HUD de vitesse & Limitations en mode Drive (style Waze / Google Maps) -->
+  <div id="drive-hud" class="drive-hud-widget" aria-live="polite">
+    <!-- Panneau circulaire officiel de limitation de vitesse -->
+    <div class="speed-limit-sign" id="speed-limit-badge" title="Vitesse maximale autorisée">
+      <span id="speed-limit-val">80</span>
+    </div>
+    <!-- Compteur digital km/h en temps réel -->
+    <div class="speedometer-pill" id="speedometer-pill" title="Vitesse actuelle GPS">
+      <span class="speed-number" id="current-speed-val">0</span>
+      <span class="speed-unit">km/h</span>
+    </div>
+  </div>
+
+  <!-- HUD de virage en direct (en haut) -->
   <div id="banner" aria-live="polite">
     <div class="banner-icon-badge" id="banner-icon-wrap" aria-hidden="true">
       <svg id="banner-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
@@ -168,29 +299,126 @@
     </div>
   </div>
 
-  <!-- Boutons flottants d'actions (FAB) -->
-  <div id="fab">
-    <button id="layers" class="fab-btn round" type="button" aria-pressed="false" title="Vue satellite" aria-label="Basculer la vue satellite">
+  <!-- Dock Flottant Vertical Unique (Sans aucun chevauchement de boutons) -->
+  <aside id="fab" aria-label="Contrôles cartographiques">
+    <!-- Boussole avec aiguille orientable -->
+    <button id="compass-btn" class="fab-btn round compass-fab" type="button" title="Réaligner au Nord" aria-label="Réaligner au Nord">
+      <svg id="compass-needle" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+        <circle cx="12" cy="12" r="10" stroke-width="1.5" stroke="var(--border-strong)"/>
+        <polygon points="12,3 15,12 12,10 9,12" fill="#ef4444" stroke="#dc2626" stroke-width="1"/>
+        <polygon points="12,21 15,12 12,14 9,12" fill="#94a3b8" stroke="#64748b" stroke-width="1"/>
+        <circle cx="12" cy="12" r="1.5" fill="currentColor"/>
+      </svg>
+    </button>
+
+    <!-- Bouton Bascule 3D / 2D -->
+    <button id="toggle-3d-btn" class="fab-btn round font-badge" type="button" title="Vue 3D bâtiments et relief" aria-label="Basculer la vue 3D">
+      <span>3D</span>
+    </button>
+
+    <!-- Bouton Bascule Mode Clair / Sombre accessible en permanence -->
+    <button id="theme-toggle-fab" class="fab-btn round theme-fab-btn" type="button" title="Changer de thème (Clair / Sombre)" aria-label="Changer de thème (Clair / Sombre)">
+      <svg class="sun-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/>
+      </svg>
+      <svg class="moon-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+      </svg>
+    </button>
+
+    <!-- Bouton Orientation dynamique (boussole gyroscopique) -->
+    <button id="orientation-btn" class="fab-btn round" type="button" aria-pressed="false" title="Suivi d'orientation gyroscopique" aria-label="Suivi d'orientation gyroscopique">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/>
+        <polygon points="12,7 15,14 12,12 9,14" fill="currentColor"/>
+      </svg>
+    </button>
+
+    <!-- Sélecteur de couches cartographiques -->
+    <button id="layers" class="fab-btn round" type="button" aria-pressed="false" title="Styles de cartes (OpenFreeMap, 3D, Satellite...)" aria-label="Choisir la couche cartographique">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <polygon points="12 2 2 7 12 12 22 7 12 2"/>
         <polyline points="2 17 12 22 22 17"/>
         <polyline points="2 12 12 17 22 12"/>
       </svg>
     </button>
-    <button id="recenter" class="fab-btn pill" type="button" hidden>
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+
+    <!-- Zoom Intégré dans le dock (Remplace le contrôle MapLibre chevauchant) -->
+    <button id="zoom-in-btn" class="fab-btn round" type="button" title="Zoom avant" aria-label="Zoom avant">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+        <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+      </svg>
+    </button>
+    <button id="zoom-out-btn" class="fab-btn round" type="button" title="Zoom arrière" aria-label="Zoom arrière">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+        <line x1="5" y1="12" x2="19" y2="12"/>
+      </svg>
+    </button>
+
+    <!-- Bouton Recentrage sur ma position -->
+    <button id="recenter" class="fab-btn round" type="button" title="Centrer sur ma position" aria-label="Centrer sur ma position">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
         <circle cx="12" cy="12" r="10"/>
-        <polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76" fill="currentColor"/>
+        <circle cx="12" cy="12" r="3" fill="currentColor"/>
+        <line x1="12" y1="2" x2="12" y2="6"/><line x1="12" y1="18" x2="12" y2="22"/>
+        <line x1="2" y1="12" x2="6" y2="12"/><line x1="18" y1="12" x2="22" y2="12"/>
       </svg>
-      <span>Recentrer</span>
     </button>
-    <button id="install" class="fab-btn pill install-pill" type="button" hidden>
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/>
-      </svg>
-      <span>Installer l'app</span>
-    </button>
-  </div>
+  </aside>
+
+  <!-- Tiroir de sélection des cartes OpenFreeMap, 3D & Satellite Hybride -->
+  <dialog id="layers-modal" class="layers-sheet" aria-labelledby="layers-sheet-title">
+    <div class="sheet-header">
+      <h2 id="layers-sheet-title">Styles de cartes</h2>
+      <button id="close-layers" type="button" class="clear-btn" aria-label="Fermer la sélection de cartes">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M18 6L6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <div class="layers-grid">
+      <button type="button" class="layer-card is-active" data-layer-id="openfreemap">
+        <span class="layer-icon">🗺️</span>
+        <div class="layer-info">
+          <b>OpenFreeMap</b>
+          <small>Vectoriel haute précision (s'adapte au mode clair / sombre)</small>
+        </div>
+      </button>
+      <button type="button" class="layer-card" data-layer-id="openfreemap-3d">
+        <span class="layer-icon">🏢</span>
+        <div class="layer-info">
+          <b>OpenFreeMap 3D (Bâtiments 3D)</b>
+          <small>Extrusions 3D en temps réel (s'adapte au mode clair / sombre)</small>
+        </div>
+      </button>
+      <button type="button" class="layer-card" data-layer-id="sat-hybrid">
+        <span class="layer-icon">🛰️</span>
+        <div class="layer-info">
+          <b>Satellite Hybride HD (Esri)</b>
+          <small>Imagerie satellite + Rues & Noms de lieux</small>
+        </div>
+      </button>
+      <button type="button" class="layer-card" data-layer-id="cyclosm">
+        <span class="layer-icon">🚲</span>
+        <div class="layer-info">
+          <b>CyclOSM (Vélo)</b>
+          <small>Pistes cyclables, voies vertes et dénivelé</small>
+        </div>
+      </button>
+      <button type="button" class="layer-card" data-layer-id="topo">
+        <span class="layer-icon">🧗</span>
+        <div class="layer-info">
+          <b>OpenTopoMap</b>
+          <small>Topographie et courbes de niveau</small>
+        </div>
+      </button>
+      <button type="button" class="layer-card" data-layer-id="osm">
+        <span class="layer-icon">🌍</span>
+        <div class="layer-info">
+          <b>OpenStreetMap Standard</b>
+          <small>OpenStreetMap classique mondial</small>
+        </div>
+      </button>
+    </div>
+  </dialog>
 
   <!-- Barre de navigation inférieure lors du guidage -->
   <div id="navbar">
@@ -199,6 +427,11 @@
       <div class="eta-sub" id="eta-sub">Calcul…</div>
     </div>
     <div class="navbar-controls">
+      <button id="sim-btn" class="fab-btn round" type="button" aria-pressed="false" aria-label="Simuler la conduite" title="Simuler la conduite (mode démo en direct)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <polygon points="5 3 19 12 5 21 5 3" fill="currentColor"/>
+        </svg>
+      </button>
       <button id="mute" class="fab-btn round" type="button" aria-pressed="true" aria-label="Guidage vocal" title="Guidage vocal">
         <svg class="sound-on" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
