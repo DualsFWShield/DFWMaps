@@ -1,9 +1,9 @@
 "use strict";
 
-const VERSION = "mon-maps-v7";
+const VERSION = "mon-maps-v10";
 const TILE_CACHE = "mon-maps-tiles";
 const MAX_TILES = 800;
-const SHELL = ["./", "index.html", "style.css", "app.js", "manifest.webmanifest", "icons/icon-192.png", "icons/icon-512.png"];
+const SHELL = ["./", "index.html", "style.css", "piper-tts.js", "client-router.js", "app.js", "manifest.webmanifest", "icons/icon-192.png", "icons/icon-512.png"];
 const LIB_HOSTS = ["unpkg.com", "fonts.googleapis.com", "fonts.gstatic.com"];
 
 function isTileHost(hostname) {

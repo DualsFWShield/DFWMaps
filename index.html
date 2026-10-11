@@ -34,6 +34,12 @@
       <button id="quick-clear-btn" class="clear-btn" type="button" aria-label="Effacer la recherche" hidden>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M18 6L6 18M6 6l12 12"/></svg>
       </button>
+      <button id="open-settings-quick-btn" class="icon-btn-search" type="button" aria-label="Paramètres de guidage et algorithme" title="Paramètres">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="3"/>
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+        </svg>
+      </button>
       <button id="open-directions-btn" class="btn-directions-shortcut" type="button" title="Calculer un itinéraire">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
           <polygon points="3 11 22 2 13 21 11 13 3 11" fill="currentColor"/>
@@ -77,6 +83,12 @@
         <button id="minimize-panel-btn" class="icon-btn" type="button" aria-label="Réduire le panneau" title="Réduire pour voir la carte">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
             <line x1="5" y1="12" x2="19" y2="12"/>
+          </svg>
+        </button>
+        <button id="open-settings-panel-btn" class="icon-btn" type="button" aria-label="Paramètres de l'itinéraire" title="Paramètres (Algorithme, Voix Piper...)">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="3"/>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
           </svg>
         </button>
         <button id="theme-toggle" class="icon-btn" type="button" aria-label="Changer de thème (Clair / Sombre)" title="Changer de thème (Clair / Sombre)">
@@ -180,7 +192,7 @@
       </button>
     </div>
 
-    <!-- Critères d'optimisation réels (Rapide, Court, Économique) -->
+    <!-- Critères d'optimisation réels (Rapide, Court, Économique, Sans autoroute) -->
     <div id="criteria-selector" class="criteria-bar" hidden>
       <button type="button" class="criteria-btn" data-criterion="fastest" aria-pressed="true">
         <span class="crit-icon">⚡</span>
@@ -203,6 +215,34 @@
           <small id="crit-eco-sub">–</small>
         </div>
       </button>
+      <button type="button" class="criteria-btn" data-criterion="nohighway" aria-pressed="false">
+        <span class="crit-icon">🛣️</span>
+        <div class="crit-details">
+          <b>Sans autoroute</b>
+          <small id="crit-nohighway-sub">–</small>
+        </div>
+      </button>
+    </div>
+
+    <!-- Options d'algorithme autonome & visualisation live -->
+    <div id="algo-controls-card" class="algo-controls-card" hidden>
+      <div class="algo-selector-row">
+        <label for="algo-type-select" class="algo-select-label">Algorithme :</label>
+        <select id="algo-type-select" class="algo-type-select" aria-label="Choisir l'algorithme d'itinéraire">
+          <option value="astar" selected>⚡ A* Classique (Recommandé · Optimal)</option>
+          <option value="waze">🚗 Waze & Google Maps (Pénalités virages & feux)</option>
+          <option value="osrm">🗺️ OpenStreetMap Local (Hiérarchies)</option>
+          <option value="aco">🐜 Fourmis & Phéromones (ACO)</option>
+        </select>
+      </div>
+      <div class="algo-row">
+        <label class="algo-switch-wrap" title="Afficher l'expansion des nœuds et le raisonnement de l'algorithme en direct sur la carte">
+          <input type="checkbox" id="algo-live-vis-toggle">
+          <span class="switch-ui"></span>
+          <span class="switch-text">🧠 Visualiser le calcul en direct</span>
+        </label>
+        <span class="algo-pill-badge" id="algo-badge-status">A* Classique</span>
+      </div>
     </div>
 
     <p id="status" role="status">Cherchez une adresse ou touchez la carte pour placer un point.</p>
@@ -299,6 +339,31 @@
     </div>
   </div>
 
+  <!-- HUD de Visualisation de l'Algorithme A* en temps réel sur la carte -->
+  <div id="algo-vis-hud" class="algo-vis-hud" hidden aria-live="polite">
+    <div class="algo-vis-header">
+      <div class="algo-vis-title-wrap">
+        <span class="algo-vis-pulse-dot" aria-hidden="true"></span>
+        <b>Recherche A* en direct</b>
+      </div>
+      <button id="algo-vis-skip-btn" type="button" class="btn-vis-skip" title="Terminer instantanément">⚡ Terminer</button>
+    </div>
+    <div class="algo-vis-stats">
+      <div class="vis-stat-col">
+        <span class="vis-stat-label">Nœuds explorés</span>
+        <b class="vis-stat-num" id="vis-nodes-count">0</b>
+      </div>
+      <div class="vis-stat-col">
+        <span class="vis-stat-label">Frontière active</span>
+        <b class="vis-stat-num" id="vis-frontier-count">0</b>
+      </div>
+      <div class="vis-stat-col">
+        <span class="vis-stat-label">Temps calcul</span>
+        <b class="vis-stat-num" id="vis-time-ms">0 ms</b>
+      </div>
+    </div>
+  </div>
+
   <!-- Dock Flottant Vertical Unique (Sans aucun chevauchement de boutons) -->
   <aside id="fab" aria-label="Contrôles cartographiques">
     <!-- Boussole avec aiguille orientable -->
@@ -364,6 +429,14 @@
         <line x1="2" y1="12" x2="6" y2="12"/><line x1="18" y1="12" x2="22" y2="12"/>
       </svg>
     </button>
+
+    <!-- Bouton Paramètres -->
+    <button id="settings-fab-btn" class="fab-btn round" type="button" title="Paramètres (Algorithme, Voix Piper...)" aria-label="Paramètres">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="3"/>
+        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+      </svg>
+    </button>
   </aside>
 
   <!-- Tiroir de sélection des cartes OpenFreeMap, 3D & Satellite Hybride -->
@@ -420,6 +493,126 @@
     </div>
   </dialog>
 
+  <!-- Modal des Paramètres (Choix Algorithme d'itinéraire & Voix Piper TTS) -->
+  <dialog id="settings-modal" class="settings-modal-dialog" aria-labelledby="settings-dialog-title">
+    <div class="modal-card">
+      <div class="sheet-header">
+        <div class="header-title-wrap">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" class="title-icon">
+            <circle cx="12" cy="12" r="3"/>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+          </svg>
+          <h2 id="settings-dialog-title">Paramètres de Navigation</h2>
+        </div>
+        <button id="close-settings" type="button" class="clear-btn" aria-label="Fermer les paramètres">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M18 6L6 18M6 6l12 12"/></svg>
+        </button>
+      </div>
+
+      <div class="settings-modal-content">
+        <!-- 1. Algorithme d'itinéraire -->
+        <div class="settings-section">
+          <div class="section-title-row">
+            <span class="section-badge">Algorithme</span>
+            <h3>Moteur d'itinéraire 100% Local</h3>
+          </div>
+          <p class="section-desc">Choisissez le moteur mathématique utilisé pour calculer vos trajets sans aucune API externe :</p>
+          
+          <div class="setting-field-group">
+            <label for="settings-algo-select" class="setting-label">Algorithme actif :</label>
+            <select id="settings-algo-select" class="custom-select">
+              <option value="astar" selected>⚡ A* Classique Heuristique (Recommandé · Optimal & Instantané)</option>
+              <option value="waze">🚗 Waze & Google Maps (Pénalités virages à gauche & carrefours)</option>
+              <option value="osrm">🗺️ OpenStreetMap Local (Hiérarchies autoroutières OSRM)</option>
+              <option value="aco">🐜 Fourmis & Phéromones (ACO · Exploration stochastique)</option>
+            </select>
+          </div>
+
+          <label class="setting-checkbox-row">
+            <input type="checkbox" id="settings-vis-toggle">
+            <span class="checkbox-text">
+              <b>Visualiser le raisonnement de l'algorithme en direct</b>
+              <small>Affiche les nœuds explorés et la frontière en temps réel sur la carte.</small>
+            </span>
+          </label>
+        </div>
+
+        <!-- 2. Synthèse Vocale Piper TTS (fr-FR) -->
+        <div class="settings-section">
+          <div class="section-title-row">
+            <span class="section-badge">Piper TTS</span>
+            <h3>Voix de Guidage Français (fr-FR)</h3>
+          </div>
+          <p class="section-desc">Modèles neuronaux Piper installés dans <code>piper-voice/fr-FR</code> :</p>
+
+          <div class="setting-field-group">
+            <label for="settings-voice-select" class="setting-label">Voix active :</label>
+            <div class="voice-picker-row">
+              <select id="settings-voice-select" class="custom-select">
+                <option value="fr_FR-siwis-medium">Siwis (Féminine · Standard)</option>
+                <option value="fr_FR-tom-medium">Tom (Masculine · Naturelle)</option>
+                <option value="fr_FR-mls-medium">MLS Studio (Féminine · Haute Définition)</option>
+                <option value="fr_FR-upmc-medium">UPMC (Féminine · Expressive)</option>
+                <option value="fr_FR-siwis-low">Siwis (Féminine · Rapide)</option>
+                <option value="fr_FR-gilles-low">Gilles (Masculine · Dynamique)</option>
+                <option value="fr_FR-mls_1840-low">MLS 1840 (Masculine · Légère)</option>
+              </select>
+              <button id="test-voice-btn" type="button" class="btn-voice-test" title="Écouter un extrait de la voix choisie">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                  <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
+                  <path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"/>
+                </svg>
+                <span>Tester</span>
+              </button>
+            </div>
+          </div>
+
+          <div class="sliders-grid">
+            <div class="slider-field">
+              <div class="slider-header">
+                <span>Vitesse d'élocution</span>
+                <span id="voice-rate-label" class="slider-val">1.0x</span>
+              </div>
+              <input type="range" id="voice-rate-slider" min="0.8" max="1.4" step="0.05" value="1.0">
+            </div>
+
+            <div class="slider-field">
+              <div class="slider-header">
+                <span>Tonalité de la voix</span>
+                <span id="voice-pitch-label" class="slider-val">1.0</span>
+              </div>
+              <input type="range" id="voice-pitch-slider" min="0.7" max="1.3" step="0.05" value="1.0">
+            </div>
+          </div>
+        </div>
+
+        <!-- 3. Annonces & Ronds-points -->
+        <div class="settings-section">
+          <div class="section-title-row">
+            <span class="section-badge">Annonces</span>
+            <h3>Détails du Guidage Vocal</h3>
+          </div>
+
+          <label class="setting-checkbox-row">
+            <input type="checkbox" id="settings-announce-roundabouts" checked>
+            <span class="checkbox-text">
+              <b>Annoncer les ronds-points avec numéro de sortie exact</b>
+              <small>Ex: « Au rond-point, prenez la 2e sortie sur la rue de Paris »</small>
+            </span>
+          </label>
+
+          <label class="setting-checkbox-row">
+            <input type="checkbox" id="settings-announce-carrefours" checked>
+            <span class="checkbox-text">
+              <b>Citer les carrefours, bifurcations et bretelles d'accès</b>
+              <small>Ex: « Au carrefour, tournez à droite », « Prenez la bretelle d'accès vers l'A 10 »</small>
+            </span>
+          </label>
+        </div>
+      </div>
+    </div>
+  </dialog>
+
   <!-- Barre de navigation inférieure lors du guidage -->
   <div id="navbar">
     <div class="navbar-eta-card">
@@ -452,6 +645,8 @@
   </div>
 
   <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+  <script src="piper-tts.js"></script>
+  <script src="client-router.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

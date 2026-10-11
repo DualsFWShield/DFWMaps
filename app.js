@@ -17,8 +17,8 @@ const state = {
   waypoints: [], // { id, pt }
   to: null,
   mode: "car",
-  criterion: "fastest", // "fastest" | "shortest" | "eco"
-  routeCandidates: {},  // { fastest: route, shortest: route, eco: route }
+  criterion: "fastest", // "fastest" | "shortest" | "eco" | "nohighway"
+  routeCandidates: {},  // { fastest: route, shortest: route, eco: route, nohighway: route }
   activeRoute: null,
   userLocation: null,
   followOrientation: false,
@@ -26,6 +26,10 @@ const state = {
   activeLayer: "ofm-bright",
   currentSpeedKmh: 0,
   speedLimitKmh: 80,
+  visualizeAlgo: localStorage.getItem("mon_maps_vis_algo") === "true",
+  algorithm: localStorage.getItem("mon_maps_algo") || "astar", // "astar" (optimal recommandé) | "waze" | "aco" | "osrm"
+  announceRoundabouts: localStorage.getItem("mon_maps_roundabouts") !== "false",
+  announceCarrefours: localStorage.getItem("mon_maps_carrefours") !== "false",
 };
 
 const markers = {
@@ -196,6 +200,39 @@ function setupRouteLayers() {
       paint: { "line-color": ["get", "color"], "line-width": 5 },
     });
   }
+
+  // Couches pour la visualisation en temps réel du raisonnement de l'algorithme A*
+  if (!map.getSource("algo-explored")) {
+    map.addSource("algo-explored", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
+  }
+  if (!map.getLayer("algo-explored-lines")) {
+    map.addLayer({
+      id: "algo-explored-lines",
+      type: "line",
+      source: "algo-explored",
+      layout,
+      paint: { "line-color": "#f59e0b", "line-width": 3.5, "line-opacity": 0.8 },
+    });
+  }
+
+  if (!map.getSource("algo-frontier")) {
+    map.addSource("algo-frontier", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
+  }
+  if (!map.getLayer("algo-frontier-pts")) {
+    map.addLayer({
+      id: "algo-frontier-pts",
+      type: "circle",
+      source: "algo-frontier",
+      paint: {
+        "circle-radius": 4.5,
+        "circle-color": "#06b6d4",
+        "circle-stroke-width": 1.5,
+        "circle-stroke-color": "#ffffff",
+        "circle-opacity": 0.9,
+      },
+    });
+  }
+
   if (state.activeRoute) {
     showCurrentRoute(false);
   }
@@ -537,15 +574,18 @@ function attachSuggest(input, list, onSelect) {
             </div>
             <span class="suggest-dist">${fmtDistance(dist)}</span>
           `;
-          li.addEventListener("pointerdown", (e) => {
+          const selectItem = (e) => {
             e.preventDefault();
+            e.stopPropagation();
             list.hidden = true;
             onSelect({
               lng: f.geometry.coordinates[0],
               lat: f.geometry.coordinates[1],
               label: full,
             });
-          });
+          };
+          li.addEventListener("pointerdown", selectItem);
+          li.addEventListener("click", selectItem);
           list.append(li);
         }
         list.hidden = !list.children.length;
@@ -606,13 +646,16 @@ document.querySelectorAll(".category-chip").forEach((chip) => {
             </div>
             <span class="suggest-dist">${fmtDistance(dist)}</span>
           `;
-          li.addEventListener("pointerdown", (e) => {
+          const selectChipItem = (e) => {
             e.preventDefault();
+            e.stopPropagation();
             quickList.hidden = true;
             map.flyTo({ center: f.geometry.coordinates, zoom: 16, duration: 800 });
             setPoint("to", { lng: f.geometry.coordinates[0], lat: f.geometry.coordinates[1], label: full });
             openRoutePanel();
-          });
+          };
+          li.addEventListener("pointerdown", selectChipItem);
+          li.addEventListener("click", selectChipItem);
           quickList.append(li);
         }
         quickList.hidden = !quickList.children.length;
@@ -651,14 +694,20 @@ function clearPoint(key) {
 $("clear-from")?.addEventListener("click", () => clearPoint("from"));
 $("clear-to")?.addEventListener("click", () => clearPoint("to"));
 
-/* ---------- Marqueurs Cartographiques ---------- */
+/* ---------- Marqueurs Cartographiques (Ancrage Précis au pixel près) ---------- */
 function createCustomMarker(type, num) {
   const el = document.createElement("div");
   el.className = `custom-marker marker-${type}`;
+  const color = type === "from" ? "#10b981" : type === "to" ? "#f43f5e" : "#8b5cf6";
+  const innerContent = num != null
+    ? `<circle cx="15" cy="15" r="8.5" fill="#ffffff"/><text x="15" y="19" text-anchor="middle" fill="${color}" font-size="12" font-weight="900" font-family="Figtree, system-ui, sans-serif">${num}</text>`
+    : `<circle cx="15" cy="15" r="5.5" fill="#ffffff"/>`;
+
   el.innerHTML = `
-    <div class="marker-pin">
-      ${num != null ? `<span class="marker-num">${num}</span>` : `<div class="marker-dot"></div>`}
-    </div>
+    <svg width="30" height="40" viewBox="0 0 30 40" fill="none" style="display:block; overflow:visible;">
+      <path d="M15 0 C6.716 0 0 6.716 0 15 C0 26.5 15 40 15 40 C15 40 30 26.5 30 15 C30 6.716 23.284 0 15 0 Z" fill="${color}" stroke="#ffffff" stroke-width="1.8"/>
+      ${innerContent}
+    </svg>
   `;
   return el;
 }
@@ -889,7 +938,7 @@ function checkAndCompute() {
   }
 }
 
-/* ---------- Calcul d'Itinéraires Distincts (Rapide, Court, Économique) ---------- */
+/* ---------- Calcul d'Itinéraires Distincts (Rapide, Court, Économique, Sans autoroute) ---------- */
 async function computeRoutes() {
   const run = ++runId;
   const pts = getAllActivePoints();
@@ -898,54 +947,125 @@ async function computeRoutes() {
   say("Calcul des itinéraires optimisés…");
   $("route-box").hidden = true;
   $("criteria-selector").hidden = true;
+  $("algo-controls-card")?.removeAttribute("hidden");
 
-  const osrmCoords = pts.map((p) => `${p.lng},${p.lat}`).join(";");
-  const brouterCoords = pts.map((p) => `${p.lng},${p.lat}`).join("|");
+  state.visualizeAlgo = Boolean($("algo-live-vis-toggle")?.checked);
+  window.__algoSkipRequested = false;
 
-  const modeConf = MODES[state.mode];
+  const visHud = $("algo-vis-hud");
+  const visNodesCount = $("vis-nodes-count");
+  const visFrontierCount = $("vis-frontier-count");
+  const visTimeMs = $("vis-time-ms");
 
-  // Requêtes combinées : OSRM pour Rapide + BRouter pour Économique et Court
-  const [osrmRes, brouterEcoRes, brouterShortRes] = await Promise.all([
-    fetch(`https://routing.openstreetmap.de/${modeConf.path}/route/v1/driving/${osrmCoords}?overview=full&geometries=geojson&steps=true&alternatives=true`)
-      .then((r) => r.json()).catch(() => null),
-    fetch(`https://brouter.de/brouter?lonlats=${brouterCoords}&profile=${modeConf.bEco}&format=geojson`)
-      .then((r) => r.json()).catch(() => null),
-    fetch(`https://brouter.de/brouter?lonlats=${brouterCoords}&profile=shortest&format=geojson`)
-      .then((r) => r.json()).catch(() => null),
-  ]);
+  if (state.visualizeAlgo && visHud) {
+    visHud.hidden = false;
+    if (visNodesCount) visNodesCount.textContent = "0";
+    if (visFrontierCount) visFrontierCount.textContent = "0";
+    if (visTimeMs) visTimeMs.textContent = "0 ms";
+  }
 
-  if (run !== runId) return;
+  const onProgress = (p) => {
+    if (visNodesCount) visNodesCount.textContent = String(p.stepsCount);
+    if (visFrontierCount) visFrontierCount.textContent = String(p.frontierSize);
+    if (visTimeMs) visTimeMs.textContent = `${p.elapsedMs} ms`;
 
-  const osrmRoutes = osrmRes?.code === "Ok" ? osrmRes.routes : [];
-  if (!osrmRoutes.length && !brouterEcoRes?.features?.length) {
+    if (map.getSource("algo-explored") && p.exploredEdges.length) {
+      map.getSource("algo-explored").setData({
+        type: "FeatureCollection",
+        features: p.exploredEdges.map((coords) => ({
+          type: "Feature",
+          geometry: { type: "LineString", coordinates: coords },
+        })),
+      });
+    }
+
+    if (map.getSource("algo-frontier") && p.frontierNodes.length) {
+      map.getSource("algo-frontier").setData({
+        type: "FeatureCollection",
+        features: p.frontierNodes.map((coords) => ({
+          type: "Feature",
+          geometry: { type: "Point", coordinates: coords },
+        })),
+      });
+    }
+  };
+
+  try {
+    const algo = state.algorithm || "waze";
+    const algoLabels = {
+      waze: "Waze & Maps",
+      aco: "Fourmis (ACO)",
+      astar: "A* Classique",
+      osrm: "OpenStreetMap",
+    };
+    const badge = $("algo-badge-status");
+    if (badge) badge.textContent = algoLabels[algo] || "Waze & Maps";
+
+    // Calcul 100% autonome et local via le moteur multi-algorithmes sans API
+    const [fastest, shortest, eco, nohighway] = await Promise.all([
+      window.ClientRouter.computeAutonomousRoute(map, {
+        from: state.from,
+        to: state.to,
+        waypoints: state.waypoints,
+        mode: state.mode,
+        criterion: "fastest",
+        algorithm: algo,
+        visualize: state.visualizeAlgo,
+        onProgress,
+      }),
+      window.ClientRouter.computeAutonomousRoute(map, {
+        from: state.from,
+        to: state.to,
+        waypoints: state.waypoints,
+        mode: state.mode,
+        criterion: "shortest",
+        algorithm: algo,
+        visualize: false,
+      }),
+      window.ClientRouter.computeAutonomousRoute(map, {
+        from: state.from,
+        to: state.to,
+        waypoints: state.waypoints,
+        mode: state.mode,
+        criterion: "eco",
+        algorithm: algo,
+        visualize: false,
+      }),
+      window.ClientRouter.computeAutonomousRoute(map, {
+        from: state.from,
+        to: state.to,
+        waypoints: state.waypoints,
+        mode: state.mode,
+        criterion: "nohighway",
+        algorithm: algo,
+        visualize: false,
+      }),
+    ]);
+
+    if (run !== runId) return;
+
+    state.routeCandidates = { fastest, shortest, eco, nohighway };
+  } catch (err) {
+    console.warn("ClientRouter error:", err);
+    say("Erreur lors du calcul d'itinéraire.");
+    return;
+  } finally {
+    if (visHud) visHud.hidden = true;
+    setTimeout(() => {
+      map.getSource("algo-explored")?.setData({ type: "FeatureCollection", features: [] });
+      map.getSource("algo-frontier")?.setData({ type: "FeatureCollection", features: [] });
+    }, 1200);
+  }
+
+  const fastest = state.routeCandidates.fastest;
+  const shortest = state.routeCandidates.shortest;
+  const eco = state.routeCandidates.eco;
+  const nohighway = state.routeCandidates.nohighway;
+
+  if (!fastest) {
     say("Aucun trajet trouvé. Essayez d'autres points.");
     return;
   }
-
-  // 1. Route RAPIDE (OSRM principal)
-  const fastest = osrmRoutes[0] || convertBrouterToRoute(brouterEcoRes?.features?.[0]);
-
-  // 2. Route ÉCONOMIQUE (BRouter profil eco ou alternative OSRM)
-  let eco = null;
-  if (brouterEcoRes?.features?.[0]) {
-    eco = convertBrouterToRoute(brouterEcoRes.features[0], fastest);
-  } else if (osrmRoutes.length > 1) {
-    eco = osrmRoutes[1];
-  } else {
-    eco = fastest;
-  }
-
-  // 3. Route COURTE (BRouter profil shortest ou alternative OSRM)
-  let shortest = null;
-  if (brouterShortRes?.features?.[0]) {
-    shortest = convertBrouterToRoute(brouterShortRes.features[0], fastest);
-  } else if (osrmRoutes.length > 1) {
-    shortest = [...osrmRoutes].sort((a, b) => a.distance - b.distance)[0];
-  } else {
-    shortest = fastest;
-  }
-
-  state.routeCandidates = { fastest, shortest, eco };
 
   // Mise à jour de la durée du mode courant
   for (const b of document.querySelectorAll("#modes button")) {
@@ -962,7 +1082,13 @@ async function computeRoutes() {
   const fuelEur = fuelL * 1.85;
   $("crit-eco-sub").textContent = state.mode === "car" ? `${fuelL.toFixed(1)} L (${fuelEur.toFixed(1)} €)` : "0 L · 100% vert";
 
+  const noHwEl = $("crit-nohighway-sub");
+  if (noHwEl) {
+    noHwEl.textContent = nohighway ? fmtDuration(nohighway.duration) : "–";
+  }
+
   $("criteria-selector").hidden = false;
+  $("algo-controls-card").hidden = false;
   updateCriteriaUI();
 
   showCurrentRoute(true);
@@ -1118,7 +1244,23 @@ function loadRoute(r) {
   nav.total = nav.cum[nav.cum.length - 1] || 1;
   const scale = nav.total / (r.distance || nav.total);
   let acc = 0;
-  nav.steps = r.legs.flatMap((l) => l.steps || []);
+  nav.steps = r.legs?.flatMap((l) => l.steps || []) || [];
+
+  // Si aucune étape fournie, générer automatiquement les étapes détaillées
+  if (nav.steps.length === 0 && window.ClientRouter?.buildTurnByTurnInstructions) {
+    nav.steps = window.ClientRouter.buildTurnByTurnInstructions(nav.geom, r.edges || [], state.mode);
+  }
+  if (nav.steps.length === 0) {
+    nav.steps = [{
+      name: "Itinéraire",
+      roadClass: "primary",
+      maxspeed: 80,
+      distance: nav.total,
+      duration: r.duration || 60,
+      maneuver: { type: "depart", instruction: "Suivez l'itinéraire" },
+    }];
+  }
+
   nav.ends = nav.steps.map((s) => (acc += (s.distance || 50) * scale));
 }
 
@@ -1137,7 +1279,12 @@ function snap(pos) {
 }
 
 function speak(text) {
-  if (!nav.voice || !window.speechSynthesis) return;
+  if (!nav.voice) return;
+  if (window.PiperTTS && typeof window.PiperTTS.speak === "function") {
+    window.PiperTTS.speak(text);
+    return;
+  }
+  if (!window.speechSynthesis) return;
   const u = new SpeechSynthesisUtterance(text);
   u.lang = "fr-FR";
   speechSynthesis.cancel();
@@ -1152,25 +1299,30 @@ function estimateSpeedLimit(step) {
   if (state.mode === "foot") return 6;
   if (state.mode === "bike") return 25;
 
-  if (step?.maxspeed && !isNaN(step.maxspeed)) {
+  if (step?.maxspeed && !isNaN(Number(step.maxspeed)) && Number(step.maxspeed) > 0) {
     return Number(step.maxspeed);
+  }
+
+  // Résolution précise selon la classe de route
+  if (step?.roadClass && window.ClientRouter?.resolveSpeedLimit) {
+    return window.ClientRouter.resolveSpeedLimit(step.roadClass, step.maxspeed, state.mode);
   }
 
   const name = (step?.name || "").toLowerCase();
   const ref = (step?.ref || "").toLowerCase();
   const text = `${name} ${ref}`;
 
+  // Autoroutes (A1, A10...)
+  if (/(\ba\s*\d+|\bautoroute\b)/i.test(text)) return 130;
+  // Voies rapides / nationales (N10...)
+  if (/(\bn\s*\d+|\bvoie rapide\b|\bexpress\b)/i.test(text)) return 110;
+  // Périphérique / rocade
+  if (/(périphérique|rocade|voie sur berge)/i.test(text)) return 70;
+  // Départementales (D12...)
+  if (/(\bd\s*\d+)/i.test(text)) return 80;
   // Zones 30 et zones de rencontre
   if (/(zone 30|zone de rencontre|ruelle|piéton|sentier)/i.test(text)) return 30;
-  // Autoroutes
-  if (/(\ba\s*\d+|\bautoroute\b)/i.test(text)) return 130;
-  // Voies rapides / nationales
-  if (/(\bn\s*\d+|\bvoie rapide\b|\bexpress\b)/i.test(text)) return 110;
-  // Rocades / Périphérique urbain
-  if (/(périphérique|rocade|voie sur berge)/i.test(text)) return 70;
-  // Départementales
-  if (/(\bd\s*\d+)/i.test(text)) return 80;
-  // Rues urbaines
+  // Rues urbaines standard
   if (/(rue|avenue|boulevard|allée|impasse|place|cours|chemin)/i.test(text)) return 50;
 
   return 50;
@@ -1332,6 +1484,7 @@ function stopNav(msg) {
   nav.marker = null;
   nav.wake?.release?.().catch(() => {});
   nav.wake = null;
+  window.PiperTTS?.stop();
   window.speechSynthesis?.cancel();
   document.body.classList.remove("navigating");
   map.easeTo({ bearing: 0, pitch: state.is3D ? 60 : 0 });
@@ -1369,14 +1522,39 @@ function onFix(p) {
     return;
   }
 
+  // Détection de déviation / sortie de trajet (> 45m pendant plus de 3 fixes)
+  if (s.d > 45 && !nav.rerouting) {
+    nav.off = (nav.off || 0) + 1;
+    if (nav.off >= 3) {
+      nav.rerouting = true;
+      speak("Recalcul de l'itinéraire en cours…");
+      $("banner-text").textContent = "Recalcul de l'itinéraire…";
+      state.from = { lng: pos[0], lat: pos[1], label: "Position GPS" };
+      computeRoutes().then(() => {
+        nav.rerouting = false;
+        nav.off = 0;
+        if (state.activeRoute) {
+          loadRoute(state.activeRoute);
+        }
+      });
+      return;
+    }
+  } else {
+    nav.off = 0;
+  }
+
   let i = nav.ends.findIndex((e) => e > s.along);
   if (i < 0) i = nav.steps.length - 1;
-  const next = nav.steps[Math.min(i + 1, nav.steps.length - 1)];
-  const toNext = Math.max(0, nav.ends[i] - s.along);
-  const text = next?.name ? `Prenez ${next.name}` : "Continuez tout droit";
 
-  // Mise à jour de la limite de vitesse
-  const speedLimit = estimateSpeedLimit(next);
+  // L'étape sur laquelle on circule ACTUELLEMENT
+  const currentStep = nav.steps[i] || nav.steps[0];
+  // La prochaine étape visée par la manœuvre
+  const next = nav.steps[Math.min(i + 1, nav.steps.length - 1)];
+  const toNext = Math.max(0, (nav.ends[i] || 0) - s.along);
+  const instructionText = next?.maneuver?.instruction || (next?.name ? `Prenez ${next.name}` : "Continuez tout droit");
+
+  // Vitesse maximale autorisée de la ROUTE ACTUELLE (et non la suivante)
+  const speedLimit = estimateSpeedLimit(currentStep);
   state.speedLimitKmh = speedLimit;
   $("speed-limit-val").textContent = String(speedLimit);
 
@@ -1388,8 +1566,20 @@ function onFix(p) {
 
   if (!nav.rerouting) {
     $("banner-dist").textContent = fmtDistance(toNext);
-    $("banner-text").textContent = text;
+    $("banner-text").textContent = instructionText;
     $("banner-icon-wrap").innerHTML = getManeuverSvg(next);
+  }
+
+  // Annonce vocale proactive intelligente (à 300m puis à 60m)
+  if (nav.voice && next && toNext > 0) {
+    const stepKey = `step-${i}`;
+    if (toNext <= 320 && toNext > 120 && !nav.said.has(`${stepKey}-300`)) {
+      nav.said.add(`${stepKey}-300`);
+      speak(`Dans 300 mètres, ${instructionText}`);
+    } else if (toNext <= 65 && toNext > 15 && !nav.said.has(`${stepKey}-now`)) {
+      nav.said.add(`${stepKey}-now`);
+      speak(instructionText);
+    }
   }
 
   const sec = (nav.route.duration * remaining) / nav.total;
@@ -1451,9 +1641,13 @@ function cancelTrip() {
   if (map.getSource("route")) {
     map.getSource("route").setData({ type: "FeatureCollection", features: [] });
   }
+  map.getSource("algo-explored")?.setData({ type: "FeatureCollection", features: [] });
+  map.getSource("algo-frontier")?.setData({ type: "FeatureCollection", features: [] });
+  $("algo-vis-hud")?.setAttribute("hidden", "");
 
   $("route-box")?.setAttribute("hidden", "");
   $("criteria-selector")?.setAttribute("hidden", "");
+  $("algo-controls-card")?.setAttribute("hidden", "");
   $("minimized-route-bar")?.setAttribute("hidden", "");
 
   const routeDurationHero = $("route-duration-hero");
@@ -1477,6 +1671,126 @@ $("cancel-route-btn")?.addEventListener("click", cancelTrip);
 $("cancel-route-action-btn")?.addEventListener("click", cancelTrip);
 $("min-cancel-btn")?.addEventListener("click", cancelTrip);
 
+/* ---------- Paramètres (Algorithme & Voix Piper TTS) ---------- */
+function syncAlgoUI() {
+  const algo = state.algorithm || "astar";
+  if ($("algo-type-select")) $("algo-type-select").value = algo;
+  if ($("settings-algo-select")) $("settings-algo-select").value = algo;
+
+  const algoLabels = {
+    astar: "A* Classique (Optimal)",
+    waze: "Waze & Maps",
+    aco: "Fourmis (ACO)",
+    osrm: "OpenStreetMap",
+  };
+  const badge = $("algo-badge-status");
+  if (badge) badge.textContent = algoLabels[algo] || "A* Classique";
+}
+
+function openSettingsModal() {
+  const modal = $("settings-modal");
+  if (!modal) return;
+
+  syncAlgoUI();
+
+  if ($("settings-vis-toggle")) $("settings-vis-toggle").checked = state.visualizeAlgo;
+  if ($("algo-live-vis-toggle")) $("algo-live-vis-toggle").checked = state.visualizeAlgo;
+
+  const voiceSelect = $("settings-voice-select");
+  if (voiceSelect && window.PiperTTS) {
+    voiceSelect.value = window.PiperTTS.voiceName;
+  }
+
+  const rateSlider = $("voice-rate-slider");
+  if (rateSlider && window.PiperTTS) {
+    rateSlider.value = String(window.PiperTTS.voiceRate);
+    if ($("voice-rate-label")) $("voice-rate-label").textContent = `${Number(window.PiperTTS.voiceRate).toFixed(2)}x`;
+  }
+
+  const pitchSlider = $("voice-pitch-slider");
+  if (pitchSlider && window.PiperTTS) {
+    pitchSlider.value = String(window.PiperTTS.voicePitch);
+    if ($("voice-pitch-label")) $("voice-pitch-label").textContent = Number(window.PiperTTS.voicePitch).toFixed(2);
+  }
+
+  if ($("settings-announce-roundabouts")) $("settings-announce-roundabouts").checked = state.announceRoundabouts;
+  if ($("settings-announce-carrefours")) $("settings-announce-carrefours").checked = state.announceCarrefours;
+
+  modal.showModal();
+}
+
+function handleAlgoChange(newAlgo) {
+  state.algorithm = newAlgo;
+  try { localStorage.setItem("mon_maps_algo", newAlgo); } catch {}
+  syncAlgoUI();
+  const pts = getAllActivePoints();
+  if (pts.length >= 2 && state.from && state.to) {
+    computeRoutes();
+  }
+}
+
+$("open-settings-quick-btn")?.addEventListener("click", openSettingsModal);
+$("open-settings-panel-btn")?.addEventListener("click", openSettingsModal);
+$("settings-fab-btn")?.addEventListener("click", openSettingsModal);
+$("close-settings")?.addEventListener("click", () => $("settings-modal")?.close());
+$("settings-modal")?.addEventListener("click", (e) => {
+  if (e.target === $("settings-modal")) $("settings-modal").close();
+});
+
+$("settings-algo-select")?.addEventListener("change", (e) => handleAlgoChange(e.target.value));
+$("algo-type-select")?.addEventListener("change", (e) => handleAlgoChange(e.target.value));
+
+$("settings-vis-toggle")?.addEventListener("change", (e) => {
+  state.visualizeAlgo = e.target.checked;
+  if ($("algo-live-vis-toggle")) $("algo-live-vis-toggle").checked = e.target.checked;
+  try { localStorage.setItem("mon_maps_vis_algo", String(state.visualizeAlgo)); } catch {}
+});
+$("algo-live-vis-toggle")?.addEventListener("change", (e) => {
+  state.visualizeAlgo = e.target.checked;
+  if ($("settings-vis-toggle")) $("settings-vis-toggle").checked = e.target.checked;
+  try { localStorage.setItem("mon_maps_vis_algo", String(state.visualizeAlgo)); } catch {}
+  const pts = getAllActivePoints();
+  if (pts.length >= 2 && state.from && state.to) {
+    computeRoutes();
+  }
+});
+
+$("settings-voice-select")?.addEventListener("change", (e) => {
+  window.PiperTTS?.setVoice(e.target.value);
+});
+
+$("test-voice-btn")?.addEventListener("click", () => {
+  window.PiperTTS?.testVoice();
+});
+
+$("voice-rate-slider")?.addEventListener("input", (e) => {
+  const r = parseFloat(e.target.value);
+  window.PiperTTS?.setRate(r);
+  if ($("voice-rate-label")) $("voice-rate-label").textContent = `${r.toFixed(2)}x`;
+});
+
+$("voice-pitch-slider")?.addEventListener("input", (e) => {
+  const p = parseFloat(e.target.value);
+  window.PiperTTS?.setPitch(p);
+  if ($("voice-pitch-label")) $("voice-pitch-label").textContent = p.toFixed(2);
+});
+
+$("settings-announce-roundabouts")?.addEventListener("change", (e) => {
+  state.announceRoundabouts = e.target.checked;
+  try { localStorage.setItem("mon_maps_roundabouts", String(e.target.checked)); } catch {}
+});
+
+$("settings-announce-carrefours")?.addEventListener("change", (e) => {
+  state.announceCarrefours = e.target.checked;
+  try { localStorage.setItem("mon_maps_carrefours", String(e.target.checked)); } catch {}
+});
+
+syncAlgoUI();
+
+$("algo-vis-skip-btn")?.addEventListener("click", () => {
+  window.__algoSkipRequested = true;
+});
+
 $("sim-btn")?.addEventListener("click", toggleDriveSimulation);
 $("speedometer-pill")?.addEventListener("click", toggleDriveSimulation);
 $("speed-limit-badge")?.addEventListener("click", () => {
@@ -1492,13 +1806,16 @@ $("speed-limit-badge")?.addEventListener("click", () => {
 $("mute")?.addEventListener("click", () => {
   nav.voice = !nav.voice;
   $("mute").setAttribute("aria-pressed", String(nav.voice));
-  if (!nav.voice) window.speechSynthesis?.cancel();
+  if (!nav.voice) {
+    window.PiperTTS?.stop();
+    window.speechSynthesis?.cancel();
+  }
 });
 
 /* ---------- PWA ---------- */
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => {
-    navigator.serviceWorker.register("sw.js?v=7")
+    navigator.serviceWorker.register("sw.js?v=10")
       .then((reg) => reg.update())
       .catch(() => {});
   });
