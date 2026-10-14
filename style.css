@@ -2073,28 +2073,70 @@ body.navigating .drive-hud-widget {
 }
 
 .settings-modal-dialog {
+  position: fixed !important;
+  inset: 0 !important;
+  margin: auto !important;
   padding: 0;
   border: none;
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-xl);
   background: transparent;
-  max-width: 560px;
-  width: 92vw;
-  box-shadow: var(--shadow-xl);
+  max-width: 600px;
+  width: min(600px, calc(100vw - 32px));
+  max-height: 88vh;
+  box-shadow: 0 25px 65px -12px rgba(0, 0, 0, 0.55), 0 0 0 1px var(--border);
+  outline: none;
+  overflow: visible;
+  z-index: 1050;
+}
+
+.settings-modal-dialog[open] {
+  display: flex;
+  flex-direction: column;
+  animation: modalScaleIn 0.22s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@keyframes modalScaleIn {
+  from {
+    opacity: 0;
+    transform: scale(0.94) translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
 }
 
 .settings-modal-dialog::backdrop {
-  background: rgba(0, 0, 0, 0.65);
-  backdrop-filter: blur(8px);
+  background: rgba(4, 7, 16, 0.72);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  animation: backdropFade 0.2s ease forwards;
+}
+
+@keyframes backdropFade {
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 
 .settings-modal-dialog .modal-card {
+  display: flex;
+  flex-direction: column;
+  max-height: 88vh;
   background: var(--surface-translucent);
-  backdrop-filter: blur(28px) saturate(180%);
-  -webkit-backdrop-filter: blur(28px) saturate(180%);
+  backdrop-filter: blur(32px) saturate(190%);
+  -webkit-backdrop-filter: blur(32px) saturate(190%);
   border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-xl);
   color: var(--ink);
   overflow: hidden;
+}
+
+.settings-modal-dialog .sheet-header {
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
 }
 
 .settings-modal-dialog .header-title-wrap {
@@ -2109,9 +2151,16 @@ body.navigating .drive-hud-widget {
   color: var(--primary);
 }
 
+.settings-modal-dialog #settings-dialog-title {
+  font-size: 16px;
+  font-weight: 700;
+  margin: 0;
+  color: var(--ink);
+}
+
 .settings-modal-content {
-  padding: 16px 20px 24px;
-  max-height: 72vh;
+  padding: 18px 20px 24px;
+  max-height: calc(88vh - 65px);
   overflow-y: auto;
   display: flex;
   flex-direction: column;
@@ -2125,21 +2174,23 @@ body.navigating .drive-hud-widget {
   padding: 14px 16px;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 12px;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.04);
 }
 
 .section-title-row {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
 }
 
 .section-badge {
-  font-size: 10.5px;
+  font-size: 10px;
   font-weight: 800;
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  padding: 2px 7px;
+  padding: 2.5px 8px;
   border-radius: var(--radius-full);
   background: var(--primary-glow);
   color: var(--primary);
@@ -2151,12 +2202,13 @@ body.navigating .drive-hud-widget {
   font-weight: 700;
   margin: 0;
   color: var(--ink);
+  flex: 1;
 }
 
 .section-desc {
   font-size: 12px;
   color: var(--ink-muted);
-  line-height: 1.4;
+  line-height: 1.45;
   margin: 0;
 }
 
@@ -2191,6 +2243,20 @@ body.navigating .drive-hud-widget {
   outline: none;
   cursor: pointer;
   transition: border-color var(--transition-fast);
+}
+
+.custom-select optgroup {
+  font-weight: 700;
+  color: var(--primary);
+  background: var(--surface-subtle);
+  padding: 4px 0;
+}
+
+.custom-select option {
+  font-weight: 500;
+  color: var(--ink);
+  background: var(--surface-solid);
+  padding: 6px 8px;
 }
 
 .custom-select:focus {
@@ -2231,6 +2297,42 @@ body.navigating .drive-hud-widget {
 .btn-voice-test svg {
   width: 14px;
   height: 14px;
+}
+
+.engine-badge {
+  font-size: 11px;
+  font-weight: 700;
+  padding: 3px 9px;
+  border-radius: var(--radius-full);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: rgba(16, 185, 129, 0.15);
+  color: #10b981;
+  border: 1px solid rgba(16, 185, 129, 0.3);
+}
+
+.engine-badge.web-hd {
+  background: rgba(59, 130, 246, 0.15);
+  color: #60a5fa;
+  border-color: rgba(59, 130, 246, 0.3);
+}
+
+.engine-badge.live-ok {
+  background: rgba(16, 185, 129, 0.15);
+  color: #10b981;
+  border-color: rgba(16, 185, 129, 0.35);
+}
+
+.voice-engine-details {
+  font-size: 11.5px;
+  color: var(--ink-muted);
+  line-height: 1.4;
+  margin-top: 4px;
+  padding: 6px 10px;
+  border-radius: var(--radius-xs);
+  background: var(--surface);
+  border: 1px solid var(--border);
 }
 
 .sliders-grid {

@@ -17,7 +17,7 @@ const state = {
   waypoints: [], // { id, pt }
   to: null,
   mode: "car",
-  criterion: "fastest", // "fastest" | "shortest" | "eco" | "nohighway"
+  criterion: localStorage.getItem("mon_maps_criterion") || "fastest", // "fastest" | "shortest" | "eco" | "nohighway"
   routeCandidates: {},  // { fastest: route, shortest: route, eco: route, nohighway: route }
   activeRoute: null,
   userLocation: null,
@@ -27,7 +27,8 @@ const state = {
   currentSpeedKmh: 0,
   speedLimitKmh: 80,
   visualizeAlgo: localStorage.getItem("mon_maps_vis_algo") === "true",
-  algorithm: localStorage.getItem("mon_maps_algo") || "astar", // "astar" (optimal recommandé) | "waze" | "aco" | "osrm"
+  useContraction: localStorage.getItem("mon_maps_use_ch") !== "false",
+  algorithm: "hybrid",
   announceRoundabouts: localStorage.getItem("mon_maps_roundabouts") !== "false",
   announceCarrefours: localStorage.getItem("mon_maps_carrefours") !== "false",
 };
@@ -991,17 +992,12 @@ async function computeRoutes() {
   };
 
   try {
-    const algo = state.algorithm || "waze";
-    const algoLabels = {
-      waze: "Waze & Maps",
-      aco: "Fourmis (ACO)",
-      astar: "A* Classique",
-      osrm: "OpenStreetMap",
-    };
     const badge = $("algo-badge-status");
-    if (badge) badge.textContent = algoLabels[algo] || "Waze & Maps";
+    if (badge) badge.textContent = "⚡ Hybride CH / A*";
 
-    // Calcul 100% autonome et local via le moteur multi-algorithmes sans API
+    const useCH = state.useContraction !== false;
+
+    // Calcul 100% autonome et local via le moteur hybride vectoriel sans API
     const [fastest, shortest, eco, nohighway] = await Promise.all([
       window.ClientRouter.computeAutonomousRoute(map, {
         from: state.from,
@@ -1009,8 +1005,8 @@ async function computeRoutes() {
         waypoints: state.waypoints,
         mode: state.mode,
         criterion: "fastest",
-        algorithm: algo,
         visualize: state.visualizeAlgo,
+        useContraction: useCH,
         onProgress,
       }),
       window.ClientRouter.computeAutonomousRoute(map, {
@@ -1019,8 +1015,8 @@ async function computeRoutes() {
         waypoints: state.waypoints,
         mode: state.mode,
         criterion: "shortest",
-        algorithm: algo,
         visualize: false,
+        useContraction: useCH,
       }),
       window.ClientRouter.computeAutonomousRoute(map, {
         from: state.from,
@@ -1028,8 +1024,8 @@ async function computeRoutes() {
         waypoints: state.waypoints,
         mode: state.mode,
         criterion: "eco",
-        algorithm: algo,
         visualize: false,
+        useContraction: useCH,
       }),
       window.ClientRouter.computeAutonomousRoute(map, {
         from: state.from,
@@ -1037,12 +1033,16 @@ async function computeRoutes() {
         waypoints: state.waypoints,
         mode: state.mode,
         criterion: "nohighway",
-        algorithm: algo,
         visualize: false,
+        useContraction: useCH,
       }),
     ]);
 
     if (run !== runId) return;
+
+    if (badge) {
+      badge.textContent = fastest?.algorithm === "hybrid-ch" ? "⚡ Hybride CH (Local)" : "⚡ Hybride A* (Local)";
+    }
 
     state.routeCandidates = { fastest, shortest, eco, nohighway };
   } catch (err) {
@@ -1278,10 +1278,10 @@ function snap(pos) {
   return best;
 }
 
-function speak(text) {
+function speak(text, force = false) {
   if (!nav.voice) return;
   if (window.PiperTTS && typeof window.PiperTTS.speak === "function") {
-    window.PiperTTS.speak(text);
+    window.PiperTTS.speak(text, { force });
     return;
   }
   if (!window.speechSynthesis) return;
@@ -1303,26 +1303,51 @@ function estimateSpeedLimit(step) {
     return Number(step.maxspeed);
   }
 
-  // Résolution précise selon la classe de route
-  if (step?.roadClass && window.ClientRouter?.resolveSpeedLimit) {
-    return window.ClientRouter.resolveSpeedLimit(step.roadClass, step.maxspeed, state.mode);
-  }
+  const loc = step?.location || 
+              (state.userLocation ? [state.userLocation.lng, state.userLocation.lat] : null) || 
+              (state.from ? [state.from.lng, state.from.lat] : null);
 
   const name = (step?.name || "").toLowerCase();
   const ref = (step?.ref || "").toLowerCase();
-  const text = `${name} ${ref}`;
+  const text = `${name} ${ref}`.trim();
 
-  // Autoroutes (A1, A10...)
+  // Résolution précise selon la classe de route et le pays (Belgique / France)
+  if (step?.roadClass && window.ClientRouter?.resolveSpeedLimit) {
+    return window.ClientRouter.resolveSpeedLimit(step.roadClass, step.maxspeed, state.mode, loc, text);
+  }
+
+  const isBelg = window.ClientRouter?.isBelgiumCoord ? window.ClientRouter.isBelgiumCoord(loc) : (loc && loc[0] >= 2.5 && loc[0] <= 6.45 && loc[1] >= 49.48 && loc[1] <= 51.52);
+  const isBru = window.ClientRouter?.isBrusselsCoord ? window.ClientRouter.isBrusselsCoord(loc) : (loc && loc[0] >= 4.24 && loc[0] <= 4.5 && loc[1] >= 50.76 && loc[1] <= 50.93);
+  const isFland = window.ClientRouter?.isFlandersCoord ? window.ClientRouter.isFlandersCoord(loc) : false;
+
+  if (isBelg) {
+    // Ring belge (R0 Ring de Bruxelles, R1, R2, R3, R8, R9...) -> 100 km/h
+    if (/(\br\s*\d+|\bring\b)/i.test(text)) return 100;
+    // Autoroutes belges (E411, E40, E19, E25, A1, A4...) -> STRICTEMENT 120 km/h en Belgique (jamais 130 !)
+    if (/(\b[ea]\s*\d+|\bautoroute\b)/i.test(text)) return 120;
+    // Voies express belges
+    if (/(\bexpress\b|\bvoie rapide\b)/i.test(text)) return 100;
+    // Routes nationales (N...)
+    if (/(\bn\s*\d+)/i.test(text)) {
+      if (isBru) return 50;
+      if (isFland) return 70; // 70 km/h par défaut hors agglomération en Flandre
+      return 90; // 90 km/h par défaut hors agglomération en Wallonie
+    }
+    // Bruxelles : règle générale par défaut "Ville 30" (depuis 2021)
+    if (isBru) return 30;
+    // Zones 30 ou rues piétonnes
+    if (/(zone 30|zone de rencontre|ruelle|piéton|sentier)/i.test(text)) return 30;
+    // Rues urbaines standard
+    if (/(rue|avenue|boulevard|allée|impasse|place|cours|chemin)/i.test(text)) return 50;
+    return 50;
+  }
+
+  // Règles France
   if (/(\ba\s*\d+|\bautoroute\b)/i.test(text)) return 130;
-  // Voies rapides / nationales (N10...)
   if (/(\bn\s*\d+|\bvoie rapide\b|\bexpress\b)/i.test(text)) return 110;
-  // Périphérique / rocade
   if (/(périphérique|rocade|voie sur berge)/i.test(text)) return 70;
-  // Départementales (D12...)
   if (/(\bd\s*\d+)/i.test(text)) return 80;
-  // Zones 30 et zones de rencontre
   if (/(zone 30|zone de rencontre|ruelle|piéton|sentier)/i.test(text)) return 30;
-  // Rues urbaines standard
   if (/(rue|avenue|boulevard|allée|impasse|place|cours|chemin)/i.test(text)) return 50;
 
   return 50;
@@ -1517,7 +1542,7 @@ function onFix(p) {
   const s = snap(pos);
   const remaining = Math.max(0, nav.total - s.along);
   if (remaining < 25) {
-    speak("Vous êtes arrivé à destination.");
+    speak("Vous êtes arrivé à destination.", true);
     stopNav("Vous êtes arrivé à destination.");
     return;
   }
@@ -1527,7 +1552,7 @@ function onFix(p) {
     nav.off = (nav.off || 0) + 1;
     if (nav.off >= 3) {
       nav.rerouting = true;
-      speak("Recalcul de l'itinéraire en cours…");
+      speak("Recalcul de l'itinéraire en cours…", true);
       $("banner-text").textContent = "Recalcul de l'itinéraire…";
       state.from = { lng: pos[0], lat: pos[1], label: "Position GPS" };
       computeRoutes().then(() => {
@@ -1573,12 +1598,21 @@ function onFix(p) {
   // Annonce vocale proactive intelligente (à 300m puis à 60m)
   if (nav.voice && next && toNext > 0) {
     const stepKey = `step-${i}`;
+    const now = Date.now();
+    const timeSinceLastSpoken = now - (nav.lastSpeakTime || 0);
+
     if (toNext <= 320 && toNext > 120 && !nav.said.has(`${stepKey}-300`)) {
-      nav.said.add(`${stepKey}-300`);
-      speak(`Dans 300 mètres, ${instructionText}`);
-    } else if (toNext <= 65 && toNext > 15 && !nav.said.has(`${stepKey}-now`)) {
-      nav.said.add(`${stepKey}-now`);
-      speak(instructionText);
+      if (timeSinceLastSpoken > 3500) {
+        nav.said.add(`${stepKey}-300`);
+        nav.lastSpeakTime = now;
+        speak(`Dans 300 mètres, ${instructionText}`);
+      }
+    } else if (toNext <= 65 && toNext > 12 && !nav.said.has(`${stepKey}-now`)) {
+      if (timeSinceLastSpoken > 2800) {
+        nav.said.add(`${stepKey}-now`);
+        nav.lastSpeakTime = now;
+        speak(instructionText);
+      }
     }
   }
 
@@ -1671,20 +1705,143 @@ $("cancel-route-btn")?.addEventListener("click", cancelTrip);
 $("cancel-route-action-btn")?.addEventListener("click", cancelTrip);
 $("min-cancel-btn")?.addEventListener("click", cancelTrip);
 
-/* ---------- Paramètres (Algorithme & Voix Piper TTS) ---------- */
+/* ---------- Paramètres (Moteur Hybride & Voix Réelles) ---------- */
 function syncAlgoUI() {
-  const algo = state.algorithm || "astar";
-  if ($("algo-type-select")) $("algo-type-select").value = algo;
-  if ($("settings-algo-select")) $("settings-algo-select").value = algo;
+  const crit = state.criterion || "fastest";
+  if ($("settings-criterion-select")) $("settings-criterion-select").value = crit;
+  if ($("algo-criterion-select")) $("algo-criterion-select").value = crit;
+  if ($("settings-ch-toggle")) $("settings-ch-toggle").checked = state.useContraction !== false;
 
-  const algoLabels = {
-    astar: "A* Classique (Optimal)",
-    waze: "Waze & Maps",
-    aco: "Fourmis (ACO)",
-    osrm: "OpenStreetMap",
-  };
   const badge = $("algo-badge-status");
-  if (badge) badge.textContent = algoLabels[algo] || "A* Classique";
+  if (badge) {
+    badge.textContent = state.useContraction !== false ? "⚡ Hybride CH (Local)" : "⚡ Hybride A* (Local)";
+  }
+}
+
+function populateVoiceSelect() {
+  const select = $("settings-voice-select");
+  if (!select || !window.PiperTTS) return;
+
+  const voicesData = window.PiperTTS.getRealAvailableVoices();
+  const currentEngine = window.PiperTTS.getEngineStatus();
+  const activeUri = window.PiperTTS.selectedVoiceURI;
+  const activeVoiceName = window.PiperTTS.voiceName;
+
+  select.innerHTML = "";
+
+  let matched = false;
+
+  // 1. Voix Belges en priorité
+  if (voicesData.belgian && voicesData.belgian.length > 0) {
+    const groupBe = document.createElement("optgroup");
+    groupBe.label = "🇧🇪 Français (Belgique)";
+    voicesData.belgian.forEach((v) => {
+      const opt = document.createElement("option");
+      opt.value = `web:${v.voiceURI}`;
+      opt.textContent = v.displayName;
+      if (activeUri === v.voiceURI || activeVoiceName === `web:${v.voiceURI}`) {
+        opt.selected = true;
+        matched = true;
+      }
+      groupBe.appendChild(opt);
+    });
+    select.appendChild(groupBe);
+  }
+
+  // 2. Voix Françaises (France)
+  if (voicesData.french && voicesData.french.length > 0) {
+    const groupFr = document.createElement("optgroup");
+    groupFr.label = "🇫🇷 Français (France)";
+    voicesData.french.forEach((v) => {
+      const opt = document.createElement("option");
+      opt.value = `web:${v.voiceURI}`;
+      opt.textContent = v.displayName;
+      if (!matched && (activeUri === v.voiceURI || activeVoiceName === `web:${v.voiceURI}`)) {
+        opt.selected = true;
+        matched = true;
+      }
+      groupFr.appendChild(opt);
+    });
+    select.appendChild(groupFr);
+  }
+
+  // 3. Autres voix francophones (Canada, etc.)
+  if (voicesData.otherFr && voicesData.otherFr.length > 0) {
+    const groupOther = document.createElement("optgroup");
+    groupOther.label = "🌐 Autres Voix Françaises";
+    voicesData.otherFr.forEach((v) => {
+      const opt = document.createElement("option");
+      opt.value = `web:${v.voiceURI}`;
+      opt.textContent = v.displayName;
+      if (!matched && (activeUri === v.voiceURI || activeVoiceName === `web:${v.voiceURI}`)) {
+        opt.selected = true;
+        matched = true;
+      }
+      groupOther.appendChild(opt);
+    });
+    select.appendChild(groupOther);
+  }
+
+  // 4. Modèles neuronaux Piper ONNX (si le backend local est actif)
+  if (voicesData.piper && voicesData.piper.length > 0 && currentEngine.backendAvailable) {
+    const groupPiper = document.createElement("optgroup");
+    groupPiper.label = "🤖 Modèles Neuronaux Piper ONNX";
+    voicesData.piper.forEach((v) => {
+      const opt = document.createElement("option");
+      opt.value = `piper:${v.id}`;
+      opt.textContent = `${v.label} · Piper Studio`;
+      if (!activeUri && (activeVoiceName === v.id || activeVoiceName === `piper:${v.id}`)) {
+        opt.selected = true;
+        matched = true;
+      }
+      groupPiper.appendChild(opt);
+    });
+    select.appendChild(groupPiper);
+  }
+
+  // Si aucune voix n'était encore sélectionnée, choisir la première option disponible
+  if (!matched && select.options.length > 0) {
+    select.selectedIndex = 0;
+    window.PiperTTS.setVoice(select.value);
+  }
+
+  updateVoiceEngineUI();
+}
+
+function updateVoiceEngineUI(status) {
+  const current = status || window.PiperTTS?.getEngineStatus();
+  if (!current) return;
+
+  const badge = $("voice-engine-badge");
+  const details = $("voice-engine-details");
+
+  if (badge) {
+    if (current.backendAvailable && !current.selectedVoiceURI) {
+      badge.textContent = "🟢 Piper Neural ONNX";
+      badge.className = "engine-badge live-ok";
+      badge.title = "Synthèse vocale native Piper ONNX exécutée localement";
+    } else {
+      badge.textContent = "✨ Voix HD Réelle";
+      badge.className = "engine-badge web-hd";
+      badge.title = `Synthèse vocale active : ${current.webVoiceName}`;
+    }
+  }
+
+  if (details) {
+    if (current.backendAvailable && !current.selectedVoiceURI) {
+      details.textContent = `Moteur Piper ONNX actif · Modèle ${current.voiceId} · Rendu neural studio haute fidélité.`;
+    } else {
+      details.textContent = `Voix active : ${current.webVoiceName} · Prosodie GPS fluide & égalisation acoustique anti-sifflement.`;
+    }
+  }
+}
+
+window.addEventListener("piper-engine-status", (e) => updateVoiceEngineUI(e.detail));
+window.addEventListener("piper-voices-ready", populateVoiceSelect);
+if (typeof window !== "undefined" && "speechSynthesis" in window) {
+  window.speechSynthesis.onvoiceschanged = () => {
+    populateVoiceSelect();
+  };
 }
 
 function openSettingsModal() {
@@ -1692,14 +1849,12 @@ function openSettingsModal() {
   if (!modal) return;
 
   syncAlgoUI();
+  populateVoiceSelect();
 
+  if ($("settings-criterion-select")) $("settings-criterion-select").value = state.criterion || "fastest";
+  if ($("settings-ch-toggle")) $("settings-ch-toggle").checked = state.useContraction !== false;
   if ($("settings-vis-toggle")) $("settings-vis-toggle").checked = state.visualizeAlgo;
   if ($("algo-live-vis-toggle")) $("algo-live-vis-toggle").checked = state.visualizeAlgo;
-
-  const voiceSelect = $("settings-voice-select");
-  if (voiceSelect && window.PiperTTS) {
-    voiceSelect.value = window.PiperTTS.voiceName;
-  }
 
   const rateSlider = $("voice-rate-slider");
   if (rateSlider && window.PiperTTS) {
@@ -1716,12 +1871,13 @@ function openSettingsModal() {
   if ($("settings-announce-roundabouts")) $("settings-announce-roundabouts").checked = state.announceRoundabouts;
   if ($("settings-announce-carrefours")) $("settings-announce-carrefours").checked = state.announceCarrefours;
 
+  updateVoiceEngineUI();
   modal.showModal();
 }
 
-function handleAlgoChange(newAlgo) {
-  state.algorithm = newAlgo;
-  try { localStorage.setItem("mon_maps_algo", newAlgo); } catch {}
+function handleCriterionChange(newCriterion) {
+  state.criterion = newCriterion;
+  try { localStorage.setItem("mon_maps_criterion", newCriterion); } catch {}
   syncAlgoUI();
   const pts = getAllActivePoints();
   if (pts.length >= 2 && state.from && state.to) {
@@ -1737,8 +1893,21 @@ $("settings-modal")?.addEventListener("click", (e) => {
   if (e.target === $("settings-modal")) $("settings-modal").close();
 });
 
-$("settings-algo-select")?.addEventListener("change", (e) => handleAlgoChange(e.target.value));
-$("algo-type-select")?.addEventListener("change", (e) => handleAlgoChange(e.target.value));
+$("settings-criterion-select")?.addEventListener("change", (e) => handleCriterionChange(e.target.value));
+$("algo-criterion-select")?.addEventListener("change", (e) => handleCriterionChange(e.target.value));
+
+$("settings-ch-toggle")?.addEventListener("change", (e) => {
+  state.useContraction = e.target.checked;
+  try { localStorage.setItem("mon_maps_use_ch", String(e.target.checked)); } catch {}
+  if (window.ClientRouter?.ROUTER_CONFIG) {
+    window.ClientRouter.ROUTER_CONFIG.useContraction = e.target.checked;
+  }
+  syncAlgoUI();
+  const pts = getAllActivePoints();
+  if (pts.length >= 2 && state.from && state.to) {
+    computeRoutes();
+  }
+});
 
 $("settings-vis-toggle")?.addEventListener("change", (e) => {
   state.visualizeAlgo = e.target.checked;
@@ -1757,6 +1926,7 @@ $("algo-live-vis-toggle")?.addEventListener("change", (e) => {
 
 $("settings-voice-select")?.addEventListener("change", (e) => {
   window.PiperTTS?.setVoice(e.target.value);
+  updateVoiceEngineUI();
 });
 
 $("test-voice-btn")?.addEventListener("click", () => {
@@ -1786,6 +1956,7 @@ $("settings-announce-carrefours")?.addEventListener("change", (e) => {
 });
 
 syncAlgoUI();
+populateVoiceSelect();
 
 $("algo-vis-skip-btn")?.addEventListener("click", () => {
   window.__algoSkipRequested = true;
@@ -1815,7 +1986,7 @@ $("mute")?.addEventListener("click", () => {
 /* ---------- PWA ---------- */
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => {
-    navigator.serviceWorker.register("sw.js?v=10")
+    navigator.serviceWorker.register("sw.js?v=12")
       .then((reg) => reg.update())
       .catch(() => {});
   });
