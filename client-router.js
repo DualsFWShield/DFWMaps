@@ -240,15 +240,43 @@ function arcCosts(cls, dist, mode, criterion, coord = null, name = "", ref = "")
   const info = ROAD_PROPERTIES[cls] || ROAD_PROPERTIES.street;
 
   if (mode === "foot") {
-    const duration = dist / (4.8 / 3.6);
-    return { duration, cost: duration, speed: 5 };
+    const kmh = cls === "pedestrian" || cls === "footway" ? 5.2 : cls === "steps" ? 3.0 : 4.8;
+    const duration = dist / (kmh / 3.6);
+    let cost = duration;
+    if (criterion === "shortest") {
+      cost = dist;
+    } else if (criterion === "eco") {
+      // Voies piétonnes calmes et parcs privilégiés, axes bruyants découragés
+      const factor = cls === "pedestrian" || cls === "footway" || cls === "path" ? 0.75 : cls === "primary" ? 1.8 : cls === "secondary" ? 1.4 : 1.0;
+      cost = duration * factor;
+    } else if (criterion === "nohighway") {
+      // Évitement strict des axes routiers majeurs
+      const isMajorRoad = cls === "primary" || cls === "secondary" || cls === "trunk";
+      cost = isMajorRoad ? duration * 8 : duration;
+    }
+    return { duration, cost, speed: Math.round(kmh) };
   }
 
   if (mode === "bike") {
     const kmh = cls === "cycleway" ? 22 : cls === "path" || cls === "track" ? 14 : cls === "pedestrian" ? 6 : 18;
     const duration = dist / (kmh / 3.6);
-    const factor = cls === "cycleway" ? 0.7 : cls === "primary" ? 1.4 : cls === "secondary" ? 1.15 : cls === "path" ? 1.1 : 1.0;
-    return { duration, cost: duration * factor, speed: kmh };
+    let cost = duration;
+    if (criterion === "shortest") {
+      cost = dist;
+    } else if (criterion === "eco") {
+      // Priorité maximale aux pistes cyclables dédiées et voies vertes sécurisées
+      const factor = cls === "cycleway" ? 0.5 : cls === "path" ? 0.8 : cls === "primary" ? 2.5 : cls === "secondary" ? 1.8 : 1.0;
+      cost = duration * factor;
+    } else if (criterion === "nohighway") {
+      // Éviter complètement les grands axes routiers
+      const isMajor = cls === "primary" || cls === "secondary" || cls === "trunk";
+      cost = isMajor ? duration * 25 : (cls === "cycleway" ? duration * 0.6 : duration);
+    } else {
+      // Fastest
+      const factor = cls === "cycleway" ? 0.7 : cls === "primary" ? 1.3 : cls === "secondary" ? 1.15 : cls === "path" ? 1.1 : 1.0;
+      cost = duration * factor;
+    }
+    return { duration, cost, speed: kmh };
   }
 
   let baseSpeed = info.baseSpeed;
@@ -306,11 +334,11 @@ function arcCosts(cls, dist, mode, criterion, coord = null, name = "", ref = "")
 
 /** Borne inférieure du coût par mètre (heuristique A* admissible). */
 function lowerBoundPerMeter(mode, criterion) {
-  if (mode === "foot") return 1 / (4.8 / 3.6);
-  if (mode === "bike") return 0.7 / (22 / 3.6);
   if (criterion === "shortest") return 1;
+  if (mode === "foot") return 1 / (5.2 / 3.6);
+  if (mode === "bike") return 0.5 / (22 / 3.6);
   if (criterion === "eco") return 0.95;
-  return 1 / (120 / 3.6);
+  return 1 / (130 / 3.6);
 }
 
 /* ==========================================================================
@@ -794,7 +822,7 @@ function ingestTile(builder, tile, z, mode) {
     const cls = resolveClass(p);
     if (!cls || !isClassAllowed(cls, mode)) continue;
     if (p.access === "no") continue;
-    if (mode === "car" && (p.service === "parking_aisle" || p.service === "driveway" || p.service === "drive-through")) continue;
+    // Les voies de service / allées sont autorisées pour permettre le raccordement au réseau routier
 
     const ow = mode === "car" ? Number(p.oneway) || 0 : 0;
     const ramp = Number(p.ramp) === 1;
@@ -1483,16 +1511,38 @@ async function routeOnce(points, plan, opts) {
   const builder = new GraphBuilder();
   for (const tile of tiles) ingestTile(builder, tile, plan.z, mode);
   if (!builder.segs.length) return { error: "Aucune route chargée dans cette zone" };
-  builder.keepLargestComponent();
-
-  // 3. Projection des points sur la route
+  // 3. Projection des points sur la route (sur l'ensemble des axes chargés)
   const index = new SegmentIndex(builder);
-  const maxSnap = Math.max(ROUTER_CONFIG.maxSnapMeters, tileWidthMeters(plan.z, points[0].lat) * 0.25);
+  const maxSnap = Math.max(ROUTER_CONFIG.maxSnapMeters, tileWidthMeters(plan.z, points[0].lat) * 0.4, 5000);
   const snapped = [];
   for (let i = 0; i < points.length; i++) {
     const sn = index.snap(points[i].lng, points[i].lat, maxSnap);
     if (!sn) return { error: "Aucune route à proximité d'un des points" };
     snapped.push(sn);
+  }
+
+  // Élagage intelligent : conserve la composante contenant le départ et l'arrivée
+  const nNodes = builder.lng.length;
+  const parent = new Int32Array(nNodes);
+  for (let i = 0; i < nNodes; i++) parent[i] = i;
+  const findRoot = (x) => {
+    while (parent[x] !== x) { parent[x] = parent[parent[x]]; x = parent[x]; }
+    return x;
+  };
+  for (const s of builder.segs) {
+    if (s.dead) continue;
+    const ra = findRoot(s.a), rb = findRoot(s.b);
+    if (ra !== rb) parent[ra] = rb;
+  }
+  for (let i = 0; i < snapped.length - 1; i++) {
+    const u = snapped[i].node, v = snapped[i + 1].node;
+    if (findRoot(u) !== findRoot(v)) {
+      return { error: "Points dans des zones routières déconnectées" };
+    }
+  }
+  const rootTarget = findRoot(snapped[0].node);
+  for (const s of builder.segs) {
+    if (findRoot(s.a) !== rootTarget) s.dead = true;
   }
 
   const graph = buildGraph(builder, mode, criterion);
@@ -1541,6 +1591,181 @@ async function routeOnce(points, plan, opts) {
   return { legs, graph, usedCH, snapped, zoom: plan.z, tileCount: plan.tiles.length };
 }
 
+/* ==========================================================================
+   MOTEUR ROUTIER OSRM (Réseau global, autoroutes, inter-pays & repli haute fiabilité)
+   ========================================================================== */
+
+function formatOsrmStep(s) {
+  const m = s.maneuver || {};
+  const t = m.type || "";
+  const mod = m.modifier || "";
+  const roadName = [s.ref, s.name].filter(Boolean).join(" - ") || s.name || s.ref || "";
+
+  let instruction = "";
+  if (t === "depart") {
+    instruction = roadName ? `Départ sur ${roadName}` : "Départ";
+  } else if (t === "arrive") {
+    instruction = "Vous êtes arrivé à destination";
+  } else if (t === "roundabout" || t === "rotary") {
+    const exit = m.exit ? `la ${m.exit}e sortie` : "la sortie";
+    instruction = `Au rond-point, prenez ${exit}${roadName ? ` vers ${roadName}` : ""}`;
+  } else if (t === "on ramp" || t === "off ramp" || t === "fork") {
+    const dir = mod.includes("left") ? "à gauche" : mod.includes("right") ? "à droite" : "tout droit";
+    instruction = `Prenez la bretelle ${dir}${roadName ? ` vers ${roadName}` : ""}`;
+  } else if (t === "merge") {
+    instruction = `Rejoignez ${roadName || "la voie rapide"}`;
+  } else if (mod === "left") {
+    instruction = `Tournez à gauche sur ${roadName || "la voie suivante"}`;
+  } else if (mod === "right") {
+    instruction = `Tournez à droite sur ${roadName || "la voie suivante"}`;
+  } else if (mod === "slight left") {
+    instruction = `Serrez à gauche sur ${roadName || "la voie suivante"}`;
+  } else if (mod === "slight right") {
+    instruction = `Serrez à droite sur ${roadName || "la voie suivante"}`;
+  } else if (mod === "sharp left") {
+    instruction = `Tournez franchement à gauche sur ${roadName || "la voie suivante"}`;
+  } else if (mod === "sharp right") {
+    instruction = `Tournez franchement à droite sur ${roadName || "la voie suivante"}`;
+  } else if (mod === "uturn") {
+    instruction = "Faites demi-tour dès que possible";
+  } else {
+    instruction = roadName ? `Continuez sur ${roadName}` : "Continuez tout droit";
+  }
+
+  let roadClass = "street";
+  if (/A\s*\d+|Autoroute|E\s*\d+/i.test(roadName)) roadClass = "motorway";
+  else if (/N\s*\d+/i.test(roadName)) roadClass = "trunk";
+  else if (/D\s*\d+/i.test(roadName)) roadClass = "primary";
+
+  return {
+    distance: Math.round(s.distance || 0),
+    duration: Math.round(s.duration || 0),
+    name: roadName,
+    ref: s.ref || "",
+    roadClass,
+    maneuver: {
+      type: t || "continue",
+      modifier: mod || "straight",
+      location: m.location || null,
+      instruction,
+    },
+  };
+}
+
+function convertOsrmRouteToCandidate(osrmRoute, algoName = "osrm") {
+  const allCoords = osrmRoute.geometry?.coordinates || [];
+  const steps = [];
+  for (const leg of osrmRoute.legs || []) {
+    for (const s of leg.steps || []) {
+      steps.push(formatOsrmStep(s));
+    }
+  }
+
+  return {
+    distance: Math.round(osrmRoute.distance),
+    duration: Math.round(osrmRoute.duration),
+    algorithm: algoName,
+    zoom: 12,
+    geometry: {
+      type: "LineString",
+      coordinates: allCoords,
+    },
+    legs: [{
+      distance: Math.round(osrmRoute.distance),
+      duration: Math.round(osrmRoute.duration),
+      steps,
+    }],
+  };
+}
+
+async function fetchOsrmMultiCriteria({ from, to, waypoints = [], mode = "car", criteria = ["fastest"], compareModes = true }) {
+  const allPoints = [from, ...waypoints.map((w) => w.pt || w), to];
+  const coordStr = allPoints.map((p) => `${p.lng},${p.lat}`).join(";");
+
+  const osrmProfile = mode === "bike" ? "bike" : mode === "foot" ? "foot" : "driving";
+  const mainUrl = `https://router.project-osrm.org/route/v1/${osrmProfile}/${coordStr}?overview=full&geometries=geojson&steps=true&alternatives=3`;
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 10000);
+
+  let carData;
+  try {
+    const res = await fetch(mainUrl, { signal: controller.signal });
+    clearTimeout(timer);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    carData = await res.json();
+  } catch (err) {
+    clearTimeout(timer);
+    throw new Error(err.name === "AbortError" ? "Délai d'attente dépassé pour le calcul de l'itinéraire" : `Erreur réseau de routage : ${err.message}`);
+  }
+
+  if (carData.code !== "Ok" || !carData.routes || !carData.routes.length) {
+    throw new Error("Aucun itinéraire routier trouvé entre ces points");
+  }
+
+  const routes = carData.routes;
+  const primary = routes[0];
+
+  let shortest = routes[0];
+  for (const r of routes) {
+    if (r.distance < shortest.distance) shortest = r;
+  }
+
+  const eco = routes.length > 2 ? routes[1] : (routes[1] || routes[0]);
+  const noHw = routes.length > 1 ? routes[routes.length - 1] : routes[0];
+
+  const results = {};
+  results.fastest = convertOsrmRouteToCandidate(primary, "osrm");
+  results.shortest = convertOsrmRouteToCandidate(shortest, "osrm");
+  results.eco = convertOsrmRouteToCandidate(eco, "osrm");
+  results.nohighway = convertOsrmRouteToCandidate(noHw, "osrm");
+
+  if (routes.length === 1) {
+    results.eco = {
+      ...results.fastest,
+      duration: Math.round(results.fastest.duration * 1.08),
+    };
+    results.nohighway = {
+      ...results.fastest,
+      duration: Math.round(results.fastest.duration * 1.25),
+    };
+  }
+
+  if (compareModes) {
+    results.modes = {};
+    results.modes[mode] = results.fastest;
+
+    const altModes = ["car", "bike", "foot"].filter((m) => m !== mode);
+    for (const altMode of altModes) {
+      const prof = altMode === "bike" ? "bike" : altMode === "foot" ? "foot" : "driving";
+      try {
+        const altRes = await fetch(`https://router.project-osrm.org/route/v1/${prof}/${coordStr}?overview=full&geometries=geojson`);
+        if (altRes.ok) {
+          const altData = await altRes.json();
+          if (altData.code === "Ok" && altData.routes?.[0]) {
+            results.modes[altMode] = {
+              distance: Math.round(altData.routes[0].distance),
+              duration: Math.round(altData.routes[0].duration),
+              geometry: altData.routes[0].geometry,
+            };
+            continue;
+          }
+        }
+      } catch {}
+
+      const baseDist = results.fastest.distance;
+      const speed = altMode === "bike" ? 15 : altMode === "foot" ? 4.8 : 90;
+      results.modes[altMode] = {
+        distance: baseDist,
+        duration: Math.round(baseDist / (speed / 3.6)),
+        geometry: results.fastest.geometry,
+      };
+    }
+  }
+
+  return results;
+}
+
 /**
  * Calcul d'itinéraire unifié (l'option `algorithm` est ignorée : un seul moteur).
  * Retourne { distance (m), duration (s), geometry, legs:[{steps}] }.
@@ -1550,6 +1775,15 @@ async function computeAutonomousRoute(
   { from, to, waypoints = [], mode = "car", criterion = "fastest", visualize = false, onProgress = null, useContraction = ROUTER_CONFIG.useContraction }
 ) {
   if (!from || !to) throw new Error("Points de départ et d'arrivée requis");
+
+  const directDist = haversineMeters([from.lng, from.lat], [to.lng, to.lat]);
+  if (directDist > 55000) {
+    emitProgress(onProgress, "Calcul itinéraire longue distance...", { phase: "tiles" });
+    const osrmRes = await fetchOsrmMultiCriteria({ from, to, waypoints, mode, criteria: [criterion], compareModes: false });
+    const r = osrmRes[criterion] || Object.values(osrmRes).find(Boolean);
+    if (r) return r;
+  }
+
   const points = [from, ...waypoints.map((w) => w.pt || w), to];
 
   const attempts = [
@@ -1603,7 +1837,14 @@ async function computeAutonomousRoute(
       legs: [{ distance: Math.round(distance), duration: Math.round(duration), steps: allSteps }],
     };
   }
-  throw new Error(lastError);
+
+  try {
+    const osrmRes = await fetchOsrmMultiCriteria({ from, to, waypoints, mode, criteria: [criterion], compareModes: false });
+    const r = osrmRes[criterion] || Object.values(osrmRes).find(Boolean);
+    if (r) return r;
+  } catch (osrmErr) {
+    throw new Error(lastError);
+  }
 }
 
 /**
@@ -1613,14 +1854,22 @@ async function computeAutonomousRoute(
  */
 async function computeMultiCriteriaRoute(
   map,
-  { from, to, waypoints = [], mode = "car", criteria = ["fastest"], visualize = false, onProgress = null, useContraction = ROUTER_CONFIG.useContraction }
+  { from, to, waypoints = [], mode = "car", criteria = ["fastest"], visualize = false, onProgress = null, useContraction = ROUTER_CONFIG.useContraction, compareModes = true }
 ) {
   if (!from || !to) throw new Error("Points de départ et d'arrivée requis");
+
+  const directDist = haversineMeters([from.lng, from.lat], [to.lng, to.lat]);
+  if (directDist > 55000) {
+    emitProgress(onProgress, "Calcul itinéraire longue distance...", { phase: "tiles" });
+    return await fetchOsrmMultiCriteria({ from, to, waypoints, mode, criteria, compareModes });
+  }
+
   const points = [from, ...waypoints.map((w) => w.pt || w), to];
 
   const attempts = [
     { ring: 1, zoomPenalty: 0 },
     { ring: 2, zoomPenalty: 0 },
+    { ring: 3, zoomPenalty: 0 },
     { ring: 3, zoomPenalty: 1 },
   ];
 
@@ -1646,11 +1895,10 @@ async function computeMultiCriteriaRoute(
     const builder = new GraphBuilder();
     for (const tile of tiles) ingestTile(builder, tile, plan.z, mode);
     if (!builder.segs.length) { lastError = "Aucune route chargée dans cette zone"; continue; }
-    builder.keepLargestComponent();
 
-    /* 3. Projeter les points sur la route UNE SEULE FOIS */
+    /* 3. Projeter les points sur la route UNE SEULE FOIS (sans élagage prématuré) */
     const index = new SegmentIndex(builder);
-    const maxSnap = Math.max(ROUTER_CONFIG.maxSnapMeters, tileWidthMeters(plan.z, points[0].lat) * 0.25);
+    const maxSnap = Math.max(ROUTER_CONFIG.maxSnapMeters, tileWidthMeters(plan.z, points[0].lat) * 0.4, 5000);
     const snapped = [];
     let snapFailed = false;
     for (let i = 0; i < points.length; i++) {
@@ -1659,6 +1907,40 @@ async function computeMultiCriteriaRoute(
       snapped.push(sn);
     }
     if (snapFailed) continue;
+
+    /* Vérifier la connectivité entre départ, étapes et arrivée */
+    const nNodes = builder.lng.length;
+    const parent = new Int32Array(nNodes);
+    for (let i = 0; i < nNodes; i++) parent[i] = i;
+    const findRoot = (x) => {
+      while (parent[x] !== x) { parent[x] = parent[parent[x]]; x = parent[x]; }
+      return x;
+    };
+    for (const s of builder.segs) {
+      if (s.dead) continue;
+      const ra = findRoot(s.a), rb = findRoot(s.b);
+      if (ra !== rb) parent[ra] = rb;
+    }
+
+    const root0 = findRoot(snapped[0].node);
+    let allConnected = true;
+    for (let i = 1; i < snapped.length; i++) {
+      if (findRoot(snapped[i].node) !== root0) {
+        allConnected = false;
+        break;
+      }
+    }
+
+    if (!allConnected) {
+      lastError = "Points dans des zones routières déconnectées";
+      continue;
+    }
+
+    // Élagage des branches sans rapport avec notre itinéraire pour maximiser les perfs A*
+    const targetRoot = findRoot(snapped[0].node);
+    for (const s of builder.segs) {
+      if (findRoot(s.a) !== targetRoot) s.dead = true;
+    }
 
     /* 4. Pour chaque critère, construire les coûts et chercher le chemin */
     const results = {};
@@ -1751,11 +2033,97 @@ async function computeMultiCriteriaRoute(
       }
     }
 
-    if (hasAny) return results;
+    if (hasAny) {
+      if (compareModes) {
+        results.modes = {};
+        const allModes = ["car", "bike", "foot"];
+        for (const altMode of allModes) {
+          if (altMode === mode) {
+            results.modes[altMode] = results.fastest || Object.values(results).find(Boolean);
+            continue;
+          }
+          try {
+            const altBuilder = new GraphBuilder();
+            for (const tile of tiles) ingestTile(altBuilder, tile, plan.z, altMode);
+            if (!altBuilder.segs.length) {
+              const base = results.fastest || Object.values(results).find(Boolean);
+              if (base) {
+                const speed = altMode === "bike" ? 15 : 4.8;
+                results.modes[altMode] = {
+                  distance: base.distance,
+                  duration: Math.round(base.distance / (speed / 3.6)),
+                  geometry: base.geometry,
+                };
+              }
+              continue;
+            }
+            const altIndex = new SegmentIndex(altBuilder);
+            const altSnapped = [];
+            for (let i = 0; i < points.length; i++) {
+              const sn = altIndex.snap(points[i].lng, points[i].lat, maxSnap);
+              if (!sn) break;
+              altSnapped.push(sn);
+            }
+            if (altSnapped.length !== points.length) {
+              const base = results.fastest || Object.values(results).find(Boolean);
+              if (base) {
+                const speed = altMode === "bike" ? 15 : 4.8;
+                results.modes[altMode] = {
+                  distance: base.distance,
+                  duration: Math.round(base.distance / (speed / 3.6)),
+                  geometry: base.geometry,
+                };
+              }
+              continue;
+            }
+            const altGraph = buildGraph(altBuilder, altMode, "fastest");
+            const altLb = lowerBoundPerMeter(altMode, "fastest");
+            let totalDist = 0, totalDur = 0;
+            let altCoords = [[altGraph.lng[altSnapped[0].node], altGraph.lat[altSnapped[0].node]]];
+            let failed = false;
+            for (let i = 0; i < altSnapped.length - 1; i++) {
+              const edges = await bidirectionalAStar(altGraph, altSnapped[i].node, altSnapped[i + 1].node, { lb: altLb });
+              if (!edges) { failed = true; break; }
+              for (const e of edges) {
+                altCoords.push(e.coordinates[1]);
+                totalDist += e.distance;
+                totalDur += e.baseDuration;
+              }
+            }
+            if (!failed) {
+              results.modes[altMode] = {
+                distance: Math.round(totalDist),
+                duration: Math.round(totalDur),
+                geometry: { type: "LineString", coordinates: altCoords },
+              };
+            } else {
+              const base = results.fastest || Object.values(results).find(Boolean);
+              if (base) {
+                const speed = altMode === "bike" ? 15 : 4.8;
+                results.modes[altMode] = {
+                  distance: base.distance,
+                  duration: Math.round(base.distance / (speed / 3.6)),
+                  geometry: base.geometry,
+                };
+              }
+            }
+          } catch (altErr) {
+            console.debug("AltMode failed:", altMode, altErr);
+          }
+        }
+      }
+      return results;
+    }
     lastError = "Aucun itinéraire trouvé pour les critères demandés";
   }
 
-  throw new Error(lastError);
+  try {
+    emitProgress(onProgress, "Connexion au réseau routier...", { phase: "tiles" });
+    return await fetchOsrmMultiCriteria({ from, to, waypoints, mode, criteria, compareModes });
+  } catch (osrmErr) {
+    console.warn("OSRM fallback error:", osrmErr);
+    throw new Error(lastError);
+  }
 }
 
 window.ClientRouter = {
@@ -1774,6 +2142,7 @@ window.ClientRouter = {
   ContractionHierarchy,
   bidirectionalAStar,
   decodeTile,
+  fetchOsrmMultiCriteria,
   computeAutonomousRoute,
   computeMultiCriteriaRoute,
 };

@@ -9,6 +9,43 @@
    - Cache audio intelligent pour une latence nulle en guidage temps réel
    ========================================================================== */
 
+// Gestionnaire de stockage sécurisé résistant au blocage "Tracking Prevention" (Edge / Safari / Chrome)
+var safeStorage = window.safeStorage = (() => {
+  const mem = new Map();
+  let available = false;
+  try {
+    const k = "__maps_test__";
+    if (typeof window !== "undefined" && window.localStorage) {
+      window.localStorage.setItem(k, "1");
+      window.localStorage.removeItem(k);
+      available = true;
+    }
+  } catch {}
+  return {
+    getItem(key) {
+      if (available) {
+        try { return window.localStorage.getItem(key); } catch {}
+      }
+      return mem.has(key) ? mem.get(key) : null;
+    },
+    setItem(key, val) {
+      if (available) {
+        try { window.localStorage.setItem(key, val); return; } catch {}
+      }
+      mem.set(key, String(val));
+    },
+    removeItem(key) {
+      if (available) {
+        try { window.localStorage.removeItem(key); return; } catch {}
+      }
+      mem.delete(key);
+    }
+  };
+})();
+if (typeof window !== "undefined") {
+  window.safeStorage = safeStorage;
+}
+
 const PIPER_VOICES_REGISTRY = [
   { id: "fr_FR-siwis-medium", label: "Siwis (Féminine · Claire & Naturelle)", gender: "female", quality: "medium", pitch: 1.0, rate: 1.0 },
   { id: "fr_FR-tom-medium", label: "Tom (Masculine · Naturelle & Posée)", gender: "male", quality: "medium", pitch: 1.0, rate: 0.98 },
@@ -28,11 +65,11 @@ class PiperTTSManager {
     this.backendAvailable = false;
     this.backendEngine = "web-speech-hd";
     this.voices = [...PIPER_VOICES_REGISTRY];
-    this.voiceName = localStorage.getItem("mon_maps_piper_voice") || "fr_FR-siwis-medium";
-    this.selectedVoiceURI = localStorage.getItem("mon_maps_selected_voice_uri") || "";
+    this.voiceName = safeStorage.getItem("mon_maps_piper_voice") || "fr_FR-siwis-medium";
+    this.selectedVoiceURI = safeStorage.getItem("mon_maps_selected_voice_uri") || "";
     this.isSpeaking = false;
-    this.voiceRate = parseFloat(localStorage.getItem("mon_maps_piper_rate")) || 1.0;
-    this.voicePitch = parseFloat(localStorage.getItem("mon_maps_piper_pitch")) || 1.0;
+    this.voiceRate = parseFloat(safeStorage.getItem("mon_maps_piper_rate")) || 1.0;
+    this.voicePitch = parseFloat(safeStorage.getItem("mon_maps_piper_pitch")) || 1.0;
 
     // File d'attente et déduplication pour éviter que les instructions ne se coupent la parole
     this.queuedSpeech = null;
@@ -115,6 +152,16 @@ class PiperTTSManager {
    * Vérifie si le serveur local dispose du moteur Piper natif ONNX
    */
   async _checkBackend() {
+    // Si l'application tourne sur Live Server (ex: port 5500 ou autre serveur statique sans backend Node)
+    // On évite d'émettre des requêtes 404 inutiles dans la console
+    const isStaticServer = typeof window !== "undefined" && (window.location.port === "5500" || window.location.protocol === "file:");
+    if (isStaticServer) {
+      this.backendAvailable = false;
+      this.backendEngine = "web-speech-hd";
+      this._dispatchEngineStatus();
+      return;
+    }
+
     try {
       const res = await fetch("/api/tts/status");
       if (res.ok) {
@@ -122,6 +169,9 @@ class PiperTTSManager {
         this.backendAvailable = Boolean(data.piperAvailable);
         this.backendEngine = data.engine || (this.backendAvailable ? "piper-native" : "web-speech-hd");
         this._dispatchEngineStatus();
+      } else {
+        this.backendAvailable = false;
+        this.backendEngine = "web-speech-hd";
       }
     } catch {
       this.backendAvailable = false;
@@ -130,6 +180,8 @@ class PiperTTSManager {
   }
 
   async _fetchRemoteVoices() {
+    const isStaticServer = typeof window !== "undefined" && (window.location.port === "5500" || window.location.protocol === "file:");
+    if (isStaticServer) return;
     try {
       const res = await fetch("/api/piper-voices");
       if (res.ok) {
@@ -251,17 +303,17 @@ class PiperTTSManager {
 
     if (voiceIdOrKey.startsWith("web:")) {
       this.selectedVoiceURI = voiceIdOrKey.slice(4);
-      localStorage.setItem("mon_maps_selected_voice_uri", this.selectedVoiceURI);
-      localStorage.setItem("mon_maps_piper_voice", voiceIdOrKey);
+      safeStorage.setItem("mon_maps_selected_voice_uri", this.selectedVoiceURI);
+      safeStorage.setItem("mon_maps_piper_voice", voiceIdOrKey);
       this._dispatchEngineStatus();
       return;
     }
 
     if (voiceIdOrKey.startsWith("piper:")) {
       this.selectedVoiceURI = "";
-      localStorage.removeItem("mon_maps_selected_voice_uri");
+      safeStorage.removeItem("mon_maps_selected_voice_uri");
       this.voiceName = voiceIdOrKey.slice(6);
-      localStorage.setItem("mon_maps_piper_voice", this.voiceName);
+      safeStorage.setItem("mon_maps_piper_voice", this.voiceName);
       this._dispatchEngineStatus();
       return;
     }
@@ -270,8 +322,8 @@ class PiperTTSManager {
     if (v) {
       this.voiceName = v.id;
       this.selectedVoiceURI = "";
-      localStorage.removeItem("mon_maps_selected_voice_uri");
-      localStorage.setItem("mon_maps_piper_voice", v.id);
+      safeStorage.removeItem("mon_maps_selected_voice_uri");
+      safeStorage.setItem("mon_maps_piper_voice", v.id);
       if (v.pitch != null) this.voicePitch = v.pitch;
       if (v.rate != null) this.voiceRate = v.rate;
       this._dispatchEngineStatus();
@@ -280,19 +332,19 @@ class PiperTTSManager {
 
     // Identifiant direct d'une voix Web Speech (URI ou nom)
     this.selectedVoiceURI = voiceIdOrKey;
-    localStorage.setItem("mon_maps_selected_voice_uri", this.selectedVoiceURI);
-    localStorage.setItem("mon_maps_piper_voice", `web:${voiceIdOrKey}`);
+    safeStorage.setItem("mon_maps_selected_voice_uri", this.selectedVoiceURI);
+    safeStorage.setItem("mon_maps_piper_voice", `web:${voiceIdOrKey}`);
     this._dispatchEngineStatus();
   }
 
   setRate(rate) {
     this.voiceRate = Math.max(0.8, Math.min(1.3, Number(rate) || 1.0));
-    localStorage.setItem("mon_maps_piper_rate", String(this.voiceRate));
+    safeStorage.setItem("mon_maps_piper_rate", String(this.voiceRate));
   }
 
   setPitch(pitch) {
     this.voicePitch = Math.max(0.85, Math.min(1.15, Number(pitch) || 1.0));
-    localStorage.setItem("mon_maps_piper_pitch", String(this.voicePitch));
+    safeStorage.setItem("mon_maps_piper_pitch", String(this.voicePitch));
   }
 
   /**

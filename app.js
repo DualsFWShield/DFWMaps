@@ -4,6 +4,13 @@
    Mon Maps · Navigation, Multi-étapes, OpenFreeMap 3D & Compteur Vitesse
    ========================================================================== */
 
+// Référence au gestionnaire de stockage sécurisé initialisé dans piper-tts.js
+var safeStorage = window.safeStorage || {
+  getItem: () => null,
+  setItem: () => {},
+  removeItem: () => {},
+};
+
 const MODES = {
   car:  { label: "Voiture", path: "routed-car",  bFast: "car-fast", bEco: "car-eco", color: "#2563eb" },
   bike: { label: "Vélo",    path: "routed-bike", bFast: "fastbike", bEco: "safety",  color: "#059669" },
@@ -17,7 +24,7 @@ const state = {
   waypoints: [], // { id, pt }
   to: null,
   mode: "car",
-  criterion: localStorage.getItem("mon_maps_criterion") || "fastest", // "fastest" | "shortest" | "eco" | "nohighway"
+  criterion: safeStorage.getItem("mon_maps_criterion") || "fastest", // "fastest" | "shortest" | "eco" | "nohighway"
   routeCandidates: {},  // { fastest: route, shortest: route, eco: route, nohighway: route }
   activeRoute: null,
   userLocation: null,
@@ -26,11 +33,11 @@ const state = {
   activeLayer: "ofm-bright",
   currentSpeedKmh: 0,
   speedLimitKmh: 80,
-  visualizeAlgo: localStorage.getItem("mon_maps_vis_algo") === "true",
-  useContraction: localStorage.getItem("mon_maps_use_ch") !== "false",
+  visualizeAlgo: safeStorage.getItem("mon_maps_vis_algo") === "true",
+  useContraction: safeStorage.getItem("mon_maps_use_ch") !== "false",
   algorithm: "hybrid",
-  announceRoundabouts: localStorage.getItem("mon_maps_roundabouts") !== "false",
-  announceCarrefours: localStorage.getItem("mon_maps_carrefours") !== "false",
+  announceRoundabouts: safeStorage.getItem("mon_maps_roundabouts") !== "false",
+  announceCarrefours: safeStorage.getItem("mon_maps_carrefours") !== "false",
 };
 
 const markers = {
@@ -42,6 +49,9 @@ const markers = {
 let waypointSeq = 0;
 let runId = 0;
 let orientationHandler = null;
+let userLocationMarker = null;
+let userHeading = null;
+let userGeoWatchId = null;
 
 /* ---------- Formats & Maths ---------- */
 function fmtDuration(s) {
@@ -55,6 +65,9 @@ function fmtDistance(m) {
 }
 
 function hav(a, b) {
+  if (window.ClientRouter?.haversineMeters) {
+    return window.ClientRouter.haversineMeters(a, b);
+  }
   const rad = Math.PI / 180, dLat = (b[1] - a[1]) * rad, dLng = (b[0] - a[0]) * rad;
   const x = Math.sin(dLat / 2) ** 2 + Math.cos(a[1] * rad) * Math.cos(b[1] * rad) * Math.sin(dLng / 2) ** 2;
   return 2 * 6371000 * Math.asin(Math.sqrt(x));
@@ -70,7 +83,7 @@ function toggleTheme() {
   const current = document.documentElement.dataset.theme === "dark" ? "dark" : "light";
   const nextTheme = current === "dark" ? "light" : "dark";
   document.documentElement.dataset.theme = nextTheme;
-  try { localStorage.setItem("maps-theme", nextTheme); } catch {}
+  safeStorage.setItem("maps-theme", nextTheme);
 
   // Mettre à jour immédiatement la carte selon le nouveau thème
   const conf = MAP_STYLES[state.activeLayer] || MAP_STYLES["openfreemap"];
@@ -92,22 +105,21 @@ function toggleTheme() {
 
 function initTheme() {
   const getPreferredTheme = () => {
-    try {
-      const saved = localStorage.getItem("maps-theme");
-      if (saved) return saved;
-    } catch {}
+    const saved = safeStorage.getItem("maps-theme");
+    if (saved) return saved;
     return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
   };
 
   const applyTheme = (theme) => {
     document.documentElement.dataset.theme = theme;
-    try { localStorage.setItem("maps-theme", theme); } catch {}
+    safeStorage.setItem("maps-theme", theme);
   };
 
   applyTheme(getPreferredTheme());
 
   $("theme-toggle")?.addEventListener("click", toggleTheme);
   $("theme-toggle-fab")?.addEventListener("click", toggleTheme);
+  $("theme-toggle-quick-btn")?.addEventListener("click", toggleTheme);
 }
 initTheme();
 
@@ -151,20 +163,16 @@ const MAP_STYLES = {
 
 // Initialisation de MapLibre avec OpenFreeMap par défaut
 const initialLayer = (() => {
-  try {
-    let saved = localStorage.getItem("maps-layer");
-    if (saved === "ofm-bright" || saved === "ofm-dark") saved = "openfreemap";
-    if (saved === "ofm-3d") saved = "openfreemap-3d";
-    if (saved && MAP_STYLES[saved]) return saved;
-  } catch {}
+  let saved = safeStorage.getItem("maps-layer");
+  if (saved === "ofm-bright" || saved === "ofm-dark") saved = "openfreemap";
+  if (saved === "ofm-3d") saved = "openfreemap-3d";
+  if (saved && MAP_STYLES[saved]) return saved;
   return "openfreemap";
 })();
 
 const initialIsDark = (() => {
-  try {
-    const saved = localStorage.getItem("maps-theme");
-    if (saved) return saved === "dark";
-  } catch {}
+  const saved = safeStorage.getItem("maps-theme");
+  if (saved) return saved === "dark";
   return window.matchMedia("(prefers-color-scheme: dark)").matches;
 })();
 
@@ -175,6 +183,31 @@ const map = new maplibregl.Map({
     : (MAP_STYLES[initialLayer].lightUrl || "https://tiles.openfreemap.org/styles/bright"),
   center: [2.35, 46.8],
   zoom: 5,
+});
+
+// Résolution automatique des sprites / icônes manquants dans le style (ex: "circle-11", "circle-15")
+map.on("styleimagemissing", (e) => {
+  const id = e.id;
+  if (map.hasImage(id)) return;
+  const size = id.startsWith("circle-") ? parseInt(id.split("-")[1], 10) || 12 : 16;
+  const canvas = document.createElement("canvas");
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext("2d");
+  if (ctx) {
+    ctx.clearRect(0, 0, size, size);
+    if (id.startsWith("circle")) {
+      ctx.beginPath();
+      ctx.arc(size / 2, size / 2, Math.max(1, size / 2 - 1.5), 0, Math.PI * 2);
+      ctx.fillStyle = "rgba(100, 116, 139, 0.75)";
+      ctx.fill();
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = "#ffffff";
+      ctx.stroke();
+    }
+  }
+  const imageData = ctx.getImageData(0, 0, size, size);
+  map.addImage(id, imageData, { pixelRatio: 1 });
 });
 
 function setupRouteLayers() {
@@ -354,7 +387,7 @@ function switchBaseLayer(layerId) {
   }
 
   highlightActiveLayer(layerId);
-  try { localStorage.setItem("maps-layer", layerId); } catch {}
+  safeStorage.setItem("maps-layer", layerId);
 }
 
 function highlightActiveLayer(layerId) {
@@ -423,7 +456,12 @@ map.on("rotate", updateCompassUI);
 map.on("move", updateCompassUI);
 
 $("compass-btn")?.addEventListener("click", () => {
-  map.easeTo({ bearing: 0, pitch: state.is3D ? 60 : 0, duration: 600 });
+  const currentBearing = Math.round(map.getBearing());
+  if (Math.abs(currentBearing) > 2) {
+    map.easeTo({ bearing: 0, pitch: state.is3D ? 60 : 0, duration: 600 });
+  } else {
+    toggleOrientationFollow();
+  }
 });
 
 /* Suivi du cap */
@@ -431,6 +469,7 @@ const orientationBtn = $("orientation-btn");
 function toggleOrientationFollow() {
   state.followOrientation = !state.followOrientation;
   orientationBtn?.setAttribute("aria-pressed", String(state.followOrientation));
+  $("compass-btn")?.classList.toggle("is-active", state.followOrientation);
 
   if (!state.followOrientation) {
     if (orientationHandler) {
@@ -496,7 +535,10 @@ function getManeuverSvg(step) {
   return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>`;
 }
 
-/* ---------- Recherche Intelligente (Proximité Prioritaire) ---------- */
+/* ---------- Recherche Intelligente & Géocodage Ultra Rapide ---------- */
+const geocodeCache = new Map();
+const MAX_GEOCODE_CACHE = 150;
+
 function parsePhotonProps(p) {
   const street = [p.housenumber, p.street].filter(Boolean).join(" ");
   const main = p.name || street || p.city || "Adresse";
@@ -510,6 +552,84 @@ function getProximityRefPoint() {
   if (state.from) return state.from;
   const c = map.getCenter();
   return { lng: c.lng, lat: c.lat };
+}
+
+async function queryGeocode(query, ref, signal) {
+  const qClean = query.trim();
+  if (qClean.length < 2) return [];
+
+  const cacheKey = `${qClean.toLowerCase()}|${ref.lng.toFixed(2)}|${ref.lat.toFixed(2)}`;
+  if (geocodeCache.has(cacheKey)) {
+    return geocodeCache.get(cacheKey);
+  }
+
+  // 1. Essai prioritaire Photon Komoot avec timeout rapide à 2000ms
+  const photonUrl = `https://photon.komoot.io/api/?q=${encodeURIComponent(qClean)}&limit=10&lang=fr&lat=${ref.lat}&lon=${ref.lng}`;
+  const timeoutCtrl = new AbortController();
+  const timer = setTimeout(() => timeoutCtrl.abort(), 2000);
+
+  let items = null;
+  try {
+    const combinedSignal = signal ? AbortSignal.any([signal, timeoutCtrl.signal]) : timeoutCtrl.signal;
+    const res = await fetch(photonUrl, { signal: combinedSignal });
+    clearTimeout(timer);
+    if (res.ok) {
+      const data = await res.json();
+      items = (data.features || []).map((f) => {
+        const { main, sub, full } = parsePhotonProps(f.properties || {});
+        const coords = f.geometry.coordinates;
+        return {
+          coords,
+          main,
+          sub,
+          full,
+          dist: hav([ref.lng, ref.lat], coords),
+        };
+      }).sort((a, b) => a.dist - b.dist);
+    }
+  } catch (err) {
+    clearTimeout(timer);
+    if (signal?.aborted) throw err;
+  }
+
+  // 2. Si Photon est lent ou a échoué, repli instantané sur Nominatim OSM
+  if (!items || !items.length) {
+    try {
+      const nomUrl = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(qClean)}&format=geojson&addressdetails=1&limit=8&accept-language=fr`;
+      const res = await fetch(nomUrl, { signal });
+      if (res.ok) {
+        const data = await res.json();
+        items = (data.features || []).map((f) => {
+          const p = f.properties || {};
+          const addr = p.address || {};
+          const street = [addr.house_number, addr.road || addr.pedestrian || addr.street].filter(Boolean).join(" ");
+          const main = p.name || street || addr.city || addr.town || addr.village || "Lieu";
+          const sub = [...new Set([street !== main ? street : null, addr.postcode, addr.city || addr.town || addr.village, addr.country].filter(Boolean))].join(", ");
+          const full = p.display_name || [...new Set([main, sub].filter(Boolean))].join(", ");
+          const coords = f.geometry.coordinates;
+          return {
+            coords,
+            main,
+            sub,
+            full,
+            dist: hav([ref.lng, ref.lat], coords),
+          };
+        }).sort((a, b) => a.dist - b.dist);
+      }
+    } catch (nomErr) {
+      if (signal?.aborted) throw nomErr;
+    }
+  }
+
+  const results = items || [];
+  if (results.length) {
+    if (geocodeCache.size >= MAX_GEOCODE_CACHE) {
+      const oldestKey = geocodeCache.keys().next().value;
+      geocodeCache.delete(oldestKey);
+    }
+    geocodeCache.set(cacheKey, results);
+  }
+  return results;
 }
 
 async function reverse(type, pt, waypointId) {
@@ -533,67 +653,80 @@ async function reverse(type, pt, waypointId) {
   } catch {}
 }
 
+function renderSuggestItems(items, list, onSelect) {
+  list.replaceChildren();
+  for (const item of items) {
+    const li = document.createElement("li");
+    li.innerHTML = `
+      <div class="suggest-item-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+          <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z"/>
+          <circle cx="12" cy="9" r="2.5"/>
+        </svg>
+      </div>
+      <div class="suggest-item-text">
+        <span class="suggest-item-main">${item.main}</span>
+        ${item.sub ? `<span class="suggest-item-sub">${item.sub}</span>` : ""}
+      </div>
+      <span class="suggest-dist">${fmtDistance(item.dist)}</span>
+    `;
+    const selectItem = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      list.hidden = true;
+      onSelect({
+        lng: item.coords[0],
+        lat: item.coords[1],
+        label: item.full,
+      });
+    };
+    li.addEventListener("pointerdown", selectItem);
+    li.addEventListener("click", selectItem);
+    list.append(li);
+  }
+  list.hidden = !items.length;
+}
+
 function attachSuggest(input, list, onSelect) {
   let timer, seq = 0;
+  let activeAbortCtrl = null;
 
   input.addEventListener("input", () => {
     clearTimeout(timer);
+    if (activeAbortCtrl) {
+      activeAbortCtrl.abort();
+      activeAbortCtrl = null;
+    }
+
     const q = input.value.trim();
     if (q.length < 2) {
       list.hidden = true;
       return;
     }
 
+    const ref = getProximityRefPoint();
+    const cacheKey = `${q.toLowerCase()}|${ref.lng.toFixed(2)}|${ref.lat.toFixed(2)}`;
+    // Affichage instantané 0ms si déjà en cache
+    if (geocodeCache.has(cacheKey)) {
+      renderSuggestItems(geocodeCache.get(cacheKey), list, onSelect);
+      return;
+    }
+
     timer = setTimeout(async () => {
       const id = ++seq;
+      activeAbortCtrl = new AbortController();
       try {
-        const ref = getProximityRefPoint();
-        const r = await fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(q)}&limit=10&lang=fr&lat=${ref.lat}&lon=${ref.lng}`);
-        const data = await r.json();
+        const items = await queryGeocode(q, ref, activeAbortCtrl.signal);
         if (id !== seq) return;
-        list.replaceChildren();
-
-        const sorted = data.features.map((f) => {
-          const coords = f.geometry.coordinates;
-          const dist = hav([ref.lng, ref.lat], coords);
-          return { f, dist };
-        }).sort((a, b) => a.dist - b.dist);
-
-        for (const { f, dist } of sorted) {
-          const { main, sub, full } = parsePhotonProps(f.properties);
-          const li = document.createElement("li");
-          li.innerHTML = `
-            <div class="suggest-item-icon" aria-hidden="true">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
-                <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z"/>
-                <circle cx="12" cy="9" r="2.5"/>
-              </svg>
-            </div>
-            <div class="suggest-item-text">
-              <span class="suggest-item-main">${main}</span>
-              ${sub ? `<span class="suggest-item-sub">${sub}</span>` : ""}
-            </div>
-            <span class="suggest-dist">${fmtDistance(dist)}</span>
-          `;
-          const selectItem = (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            list.hidden = true;
-            onSelect({
-              lng: f.geometry.coordinates[0],
-              lat: f.geometry.coordinates[1],
-              label: full,
-            });
-          };
-          li.addEventListener("pointerdown", selectItem);
-          li.addEventListener("click", selectItem);
-          list.append(li);
+        renderSuggestItems(items, list, onSelect);
+      } catch (err) {
+        if (err.name !== "AbortError") {
+          list.hidden = true;
         }
-        list.hidden = !list.children.length;
-      } catch {
-        list.hidden = true;
+      } finally {
+        activeAbortCtrl = null;
       }
-    }, 280);
+    }, 170); // Debounce réactif 170ms
   });
 
   input.addEventListener("blur", () => setTimeout(() => { list.hidden = true; }, 180));
@@ -622,46 +755,22 @@ attachSuggest(quickInput, quickList, (pt) => {
   openRoutePanel();
 });
 
-// Catégories rapides
+// Catégories rapides avec requêtes accélérées
 document.querySelectorAll(".category-chip").forEach((chip) => {
-  chip.addEventListener("click", () => {
+  chip.addEventListener("click", async () => {
     const q = chip.dataset.query;
     quickInput.value = chip.textContent.trim();
     if (quickClear) quickClear.hidden = false;
     const ref = getProximityRefPoint();
-    fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(q)}&limit=10&lang=fr&lat=${ref.lat}&lon=${ref.lng}`)
-      .then((r) => r.json())
-      .then((data) => {
-        quickList.replaceChildren();
-        for (const f of data.features) {
-          const { main, sub, full } = parsePhotonProps(f.properties);
-          const dist = hav([ref.lng, ref.lat], f.geometry.coordinates);
-          const li = document.createElement("li");
-          li.innerHTML = `
-            <div class="suggest-item-icon" aria-hidden="true">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z"/><circle cx="12" cy="9" r="2.5"/></svg>
-            </div>
-            <div class="suggest-item-text">
-              <span class="suggest-item-main">${main}</span>
-              ${sub ? `<span class="suggest-item-sub">${sub}</span>` : ""}
-            </div>
-            <span class="suggest-dist">${fmtDistance(dist)}</span>
-          `;
-          const selectChipItem = (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            quickList.hidden = true;
-            map.flyTo({ center: f.geometry.coordinates, zoom: 16, duration: 800 });
-            setPoint("to", { lng: f.geometry.coordinates[0], lat: f.geometry.coordinates[1], label: full });
-            openRoutePanel();
-          };
-          li.addEventListener("pointerdown", selectChipItem);
-          li.addEventListener("click", selectChipItem);
-          quickList.append(li);
-        }
-        quickList.hidden = !quickList.children.length;
-      })
-      .catch(() => {});
+    try {
+      const items = await queryGeocode(q, ref);
+      renderSuggestItems(items, quickList, (pt) => {
+        quickInput.value = pt.label;
+        map.flyTo({ center: [pt.lng, pt.lat], zoom: 16, duration: 800 });
+        setPoint("to", pt);
+        openRoutePanel();
+      });
+    } catch {}
   });
 });
 
@@ -843,7 +952,78 @@ map.on("click", (e) => {
   }
 });
 
-/* Position actuelle */
+/* ---------- Géolocalisation Haute Précision & Orientation Utilisateur ---------- */
+function updateUserLocation(coords, heading = null) {
+  if (!coords || typeof coords.lng !== "number" || typeof coords.lat !== "number") return;
+  state.userLocation = { lng: coords.lng, lat: coords.lat };
+
+  if (heading != null && !isNaN(heading)) {
+    userHeading = heading;
+  }
+
+  if (!userLocationMarker) {
+    const el = document.createElement("div");
+    el.className = "user-location-marker";
+    el.innerHTML = `
+      <div class="user-heading-cone" id="user-heading-cone">
+        <svg viewBox="0 0 60 60">
+          <defs>
+            <linearGradient id="user-cone-grad" x1="50%" y1="100%" x2="50%" y2="0%">
+              <stop offset="0%" stop-color="#2563eb" stop-opacity="0.5"/>
+              <stop offset="100%" stop-color="#2563eb" stop-opacity="0"/>
+            </linearGradient>
+          </defs>
+          <path d="M30 30 L8 0 A34 34 0 0 1 52 0 Z" fill="url(#user-cone-grad)"/>
+          <polygon points="30,14 25,22 35,22" fill="#2563eb"/>
+        </svg>
+      </div>
+      <div class="user-pulse-ring"></div>
+      <div class="user-dot"></div>
+    `;
+    userLocationMarker = new maplibregl.Marker({ element: el, anchor: "center" })
+      .setLngLat([coords.lng, coords.lat])
+      .addTo(map);
+  } else {
+    userLocationMarker.setLngLat([coords.lng, coords.lat]);
+  }
+
+  const cone = document.getElementById("user-heading-cone");
+  if (cone) {
+    if (userHeading != null) {
+      cone.style.display = "block";
+      cone.style.transform = `rotate(${userHeading}deg)`;
+    }
+  }
+}
+
+function handleOrientationEvent(e) {
+  let heading = null;
+  if (e.webkitCompassHeading != null) {
+    heading = e.webkitCompassHeading;
+  } else if (e.alpha != null) {
+    heading = (360 - e.alpha) % 360;
+  }
+  if (heading != null && state.userLocation) {
+    updateUserLocation(state.userLocation, heading);
+  }
+}
+
+window.addEventListener("deviceorientationabsolute", handleOrientationEvent, { passive: true });
+window.addEventListener("deviceorientation", handleOrientationEvent, { passive: true });
+
+function startLiveUserTracking() {
+  if (userGeoWatchId !== null || !navigator.geolocation) return;
+  userGeoWatchId = navigator.geolocation.watchPosition(
+    (p) => {
+      const coords = { lng: p.coords.longitude, lat: p.coords.latitude };
+      updateUserLocation(coords, p.coords.heading);
+    },
+    () => {},
+    { enableHighAccuracy: true, maximumAge: 3000, timeout: 15000 }
+  );
+}
+
+/* Position actuelle (champ Départ) */
 $("locate")?.addEventListener("click", () => {
   if (!navigator.geolocation) {
     say("La géolocalisation n'est pas disponible.");
@@ -855,8 +1035,11 @@ $("locate")?.addEventListener("click", () => {
     (p) => {
       $("locate").classList.remove("is-active");
       say("");
-      state.userLocation = { lng: p.coords.longitude, lat: p.coords.latitude };
-      setPoint("from", { lng: p.coords.longitude, lat: p.coords.latitude, label: "Ma position actuelle" });
+      const coords = { lng: p.coords.longitude, lat: p.coords.latitude };
+      updateUserLocation(coords, p.coords.heading);
+      setPoint("from", { lng: coords.lng, lat: coords.lat, label: "Ma position actuelle" });
+      map.flyTo({ center: [coords.lng, coords.lat], zoom: 16, duration: 800 });
+      startLiveUserTracking();
     },
     () => {
       $("locate").classList.remove("is-active");
@@ -866,17 +1049,47 @@ $("locate")?.addEventListener("click", () => {
   );
 });
 
+/* Bouton Recentrage Flottant sur la carte ("Me localiser") */
 $("recenter")?.addEventListener("click", () => {
-  if (state.userLocation) {
-    map.flyTo({ center: [state.userLocation.lng, state.userLocation.lat], zoom: 16, duration: 800 });
-  } else if (state.from) {
-    map.flyTo({ center: [state.from.lng, state.from.lat], zoom: 15, duration: 800 });
-  } else {
-    navigator.geolocation?.getCurrentPosition((p) => {
-      state.userLocation = { lng: p.coords.longitude, lat: p.coords.latitude };
-      map.flyTo({ center: [p.coords.longitude, p.coords.latitude], zoom: 16, duration: 800 });
-    });
+  const btn = $("recenter");
+  btn?.classList.add("is-locating");
+
+  if (!navigator.geolocation) {
+    btn?.classList.remove("is-locating");
+    if (state.userLocation) {
+      map.flyTo({ center: [state.userLocation.lng, state.userLocation.lat], zoom: 16.5, duration: 800 });
+    } else {
+      say("La géolocalisation n'est pas disponible.");
+    }
+    return;
   }
+
+  say("Localisation en cours…");
+  navigator.geolocation.getCurrentPosition(
+    (p) => {
+      btn?.classList.remove("is-locating");
+      btn?.classList.add("tracking");
+      say("");
+      const coords = { lng: p.coords.longitude, lat: p.coords.latitude };
+      updateUserLocation(coords, p.coords.heading);
+      map.flyTo({ center: [coords.lng, coords.lat], zoom: 16.5, duration: 900 });
+      startLiveUserTracking();
+    },
+    () => {
+      btn?.classList.remove("is-locating");
+      btn?.classList.remove("tracking");
+      if (state.userLocation) {
+        map.flyTo({ center: [state.userLocation.lng, state.userLocation.lat], zoom: 16, duration: 800 });
+      } else {
+        say("Impossible d'obtenir la position GPS.");
+      }
+    },
+    { enableHighAccuracy: true, timeout: 8000 }
+  );
+});
+
+map.on("dragstart", () => {
+  $("recenter")?.classList.remove("tracking");
 });
 
 $("swap")?.addEventListener("click", () => {
@@ -997,13 +1210,14 @@ async function computeRoutes() {
 
     const useCH = state.useContraction !== false;
 
-    // Calcul 100% autonome et local via le moteur hybride vectoriel sans API (factorisé : 1 graphe -> 4 critères)
+    // Calcul 100% autonome et local via le moteur hybride vectoriel sans API (factorisé : 1 graphe -> 4 critères + modes)
     const routes = await window.ClientRouter.computeMultiCriteriaRoute(map, {
       from: state.from,
       to: state.to,
       waypoints: state.waypoints,
       mode: state.mode,
       criteria: ["fastest", "shortest", "eco", "nohighway"],
+      compareModes: true,
       visualize: state.visualizeAlgo,
       useContraction: useCH,
       onProgress,
@@ -1017,13 +1231,20 @@ async function computeRoutes() {
     const nohighway = routes?.nohighway;
 
     if (badge) {
-      badge.textContent = fastest?.algorithm === "hybrid-ch" ? "⚡ Hybride CH (Local)" : "⚡ Hybride A* (Local)";
+      if (fastest?.algorithm === "hybrid-ch") {
+        badge.textContent = "⚡ Hybride CH (Local)";
+      } else if (fastest?.algorithm === "hybrid-astar") {
+        badge.textContent = "⚡ Hybride A* (Local)";
+      } else {
+        badge.textContent = "🌐 Réseau Routier OSRM";
+      }
     }
 
     state.routeCandidates = { fastest, shortest, eco, nohighway };
+    state.routeModes = routes?.modes || {};
   } catch (err) {
     console.warn("ClientRouter error:", err);
-    say("Erreur lors du calcul d'itinéraire.");
+    say(err?.message && err.message.length < 80 ? err.message : "Aucun itinéraire routier trouvé entre ces points.");
     return;
   } finally {
     if (visHud) visHud.hidden = true;
@@ -1043,25 +1264,42 @@ async function computeRoutes() {
     return;
   }
 
-  // Mise à jour de la durée du mode courant
+  // Mise à jour de la durée des 3 modes de transport en haut du panneau
   for (const b of document.querySelectorAll("#modes button")) {
-    if (b.dataset.mode === state.mode) {
-      b.querySelector("small").textContent = fmtDuration(fastest.duration);
+    const m = b.dataset.mode;
+    const modeRoute = state.routeModes?.[m] || (m === state.mode ? fastest : null);
+    const smallEl = b.querySelector("small");
+    if (smallEl) {
+      smallEl.textContent = modeRoute ? fmtDuration(modeRoute.duration) : "–";
     }
   }
 
-  // Métadonnées d'affichage des critères
-  $("crit-fastest-sub").textContent = fmtDuration(fastest.duration);
-  $("crit-shortest-sub").textContent = fmtDistance(shortest.distance);
+  // Métadonnées d'affichage riches sur les 4 boutons de critères (Temps, Km, Essence)
+  const fFuel = computeFuelDetails(fastest.distance, "fastest", state.mode);
+  $("crit-fastest-sub").innerHTML = `${fmtDuration(fastest.duration)} · ${fmtDistance(fastest.distance)}<span class="crit-fuel-tag">${fFuel.fuelStr}</span>`;
 
-  const fuelL = (eco.distance / 1000) * 0.062;
-  const fuelEur = fuelL * 1.85;
-  $("crit-eco-sub").textContent = state.mode === "car" ? `${fuelL.toFixed(1)} L (${fuelEur.toFixed(1)} €)` : "0 L · 100% vert";
+  if (shortest) {
+    const sFuel = computeFuelDetails(shortest.distance, "shortest", state.mode);
+    $("crit-shortest-sub").innerHTML = `${fmtDuration(shortest.duration)} · ${fmtDistance(shortest.distance)}<span class="crit-fuel-tag">${sFuel.fuelStr}</span>`;
+  }
+
+  if (eco) {
+    const eFuel = computeFuelDetails(eco.distance, "eco", state.mode);
+    $("crit-eco-sub").innerHTML = `${fmtDuration(eco.duration)} · ${fmtDistance(eco.distance)}<span class="crit-fuel-tag">${eFuel.fuelStr}</span>`;
+  }
 
   const noHwEl = $("crit-nohighway-sub");
   if (noHwEl) {
-    noHwEl.textContent = nohighway ? fmtDuration(nohighway.duration) : "–";
+    if (nohighway) {
+      const nhFuel = computeFuelDetails(nohighway.distance, "nohighway", state.mode);
+      noHwEl.innerHTML = `${fmtDuration(nohighway.duration)} · ${fmtDistance(nohighway.distance)}<span class="crit-fuel-tag">${nhFuel.fuelStr}</span>`;
+    } else {
+      noHwEl.textContent = "–";
+    }
   }
+
+  // Génération du tableau comparatif complet des 4 critères & 3 modes
+  renderComparisonTable(state.routeCandidates, state.routeModes);
 
   $("criteria-selector").hidden = false;
   $("algo-controls-card").hidden = false;
@@ -1070,6 +1308,121 @@ async function computeRoutes() {
   showCurrentRoute(true);
 }
 
+function computeFuelDetails(distanceMeters, criterion = "fastest", mode = "car") {
+  const km = (distanceMeters || 0) / 1000;
+  if (mode !== "car") {
+    const kcal = Math.round(km * (mode === "bike" ? 28 : 65));
+    const co2SavedKg = (km * 0.125).toFixed(1);
+    return {
+      litres: 0,
+      eur: 0,
+      fuelStr: "0 L (Vert)",
+      ecoMeta: `${kcal} kcal · -${co2SavedKg} kg CO₂`,
+    };
+  }
+
+  let rate = 0.064; // ~6.4 L / 100km pour fastest (vitesse soutenue sur autoroute/express)
+  if (criterion === "shortest") rate = 0.058; // ~5.8 L / 100km (réseau direct)
+  else if (criterion === "eco") rate = 0.049; // ~4.9 L / 100km (optimal 80-90 km/h, traînée aérodynamique minimale)
+  else if (criterion === "nohighway") rate = 0.053; // ~5.3 L / 100km (nationales/départementales)
+
+  const litres = km * rate;
+  const eur = litres * 1.85; // Estimation moyenne carburant 1.85 € / L
+  return {
+    litres,
+    eur,
+    fuelStr: `~${litres.toFixed(1)} L (${eur.toFixed(1)} €)`,
+    ratePer100Km: (rate * 100).toFixed(1),
+  };
+}
+
+function renderComparisonTable(candidates, modes) {
+  const tbody = $("comparison-table-body");
+  if (!tbody || !candidates) return;
+  tbody.replaceChildren();
+
+  const rows = [];
+  const carVariants = [
+    { key: "fastest", badge: `<span class="table-badge fastest">⚡ Voiture · Rapide</span>` },
+    { key: "shortest", badge: `<span class="table-badge shortest">📏 Voiture · Court</span>` },
+    { key: "eco", badge: `<span class="table-badge eco">🌿 Voiture · Éco</span>` },
+    { key: "nohighway", badge: `<span class="table-badge nohighway">🚫 Sans autoroute</span>` },
+  ];
+
+  for (const v of carVariants) {
+    const r = candidates[v.key];
+    if (r) {
+      const fuel = computeFuelDetails(r.distance, v.key, "car");
+      rows.push({
+        mode: "car",
+        criterion: v.key,
+        badge: v.badge,
+        dur: r.duration,
+        dist: r.distance,
+        fuel: fuel.fuelStr,
+      });
+    }
+  }
+
+  // Vélo
+  const bikeR = modes?.bike || (state.mode === "bike" ? candidates.fastest : null);
+  if (bikeR) {
+    const fuel = computeFuelDetails(bikeR.distance, "fastest", "bike");
+    rows.push({
+      mode: "bike",
+      criterion: "fastest",
+      badge: `<span class="table-badge bike">🚲 Vélo</span>`,
+      dur: bikeR.duration,
+      dist: bikeR.distance,
+      fuel: `0 L (${fuel.ecoMeta})`,
+    });
+  }
+
+  // À pied
+  const footR = modes?.foot || (state.mode === "foot" ? candidates.fastest : null);
+  if (footR) {
+    const fuel = computeFuelDetails(footR.distance, "fastest", "foot");
+    rows.push({
+      mode: "foot",
+      criterion: "fastest",
+      badge: `<span class="table-badge foot">🚶 À pied</span>`,
+      dur: footR.duration,
+      dist: footR.distance,
+      fuel: `0 L (${fuel.ecoMeta})`,
+    });
+  }
+
+  for (const row of rows) {
+    const tr = document.createElement("tr");
+    tr.className = "clickable-row";
+    const isCurrent = state.mode === row.mode && (row.mode !== "car" || state.criterion === row.criterion);
+    if (isCurrent) tr.classList.add("is-selected");
+
+    tr.innerHTML = `
+      <td>${row.badge}</td>
+      <td><b>${fmtDuration(row.dur)}</b></td>
+      <td>${fmtDistance(row.dist)}</td>
+      <td><small>${row.fuel}</small></td>
+    `;
+
+    tr.addEventListener("click", () => {
+      if (row.mode !== state.mode) {
+        state.mode = row.mode;
+        document.querySelectorAll("#modes button").forEach((b) => {
+          const isSel = b.dataset.mode === state.mode;
+          b.setAttribute("aria-pressed", String(isSel));
+          b.setAttribute("aria-selected", String(isSel));
+        });
+      }
+      state.criterion = row.criterion;
+      updateCriteriaUI();
+      showCurrentRoute(false);
+      renderComparisonTable(state.routeCandidates, state.routeModes);
+    });
+
+    tbody.appendChild(tr);
+  }
+}
 
 function updateCriteriaUI() {
   document.querySelectorAll(".criteria-btn").forEach((btn) => {
@@ -1083,6 +1436,7 @@ document.querySelectorAll(".criteria-btn").forEach((btn) => {
     state.criterion = btn.dataset.criterion;
     updateCriteriaUI();
     showCurrentRoute(false);
+    renderComparisonTable(state.routeCandidates, state.routeModes);
   });
 });
 
@@ -1122,13 +1476,13 @@ function showCurrentRoute(fit = false) {
 
   // Pillule Essence / Éco
   const fuelEl = $("route-fuel-hero");
+  const fuelInfo = computeFuelDetails(r.distance, state.criterion, state.mode);
   if (state.mode === "car") {
-    const fuelL = (r.distance / 1000) * 0.062;
-    const fuelEur = fuelL * 1.85;
-    fuelEl.textContent = `~${fuelL.toFixed(1)} L (${fuelEur.toFixed(1)} €)`;
+    fuelEl.textContent = `${fuelInfo.fuelStr}`;
     fuelEl.hidden = false;
   } else {
-    fuelEl.hidden = true;
+    fuelEl.textContent = `0 L · ${fuelInfo.ecoMeta}`;
+    fuelEl.hidden = false;
   }
 
   // Barre réduite Google Maps (minimized bottom card)
@@ -1431,8 +1785,6 @@ function stopNav(msg) {
     navigator.geolocation.clearWatch(nav.watch);
   }
   nav.watch = null;
-  nav.marker?.remove();
-  nav.marker = null;
   nav.wake?.release?.().catch(() => {});
   nav.wake = null;
   window.PiperTTS?.stop();
@@ -1450,14 +1802,7 @@ function onFixError(err) {
 function onFix(p) {
   if (!nav.on) return;
   const pos = [p.coords.longitude, p.coords.latitude];
-
-  if (!nav.marker) {
-    const el = document.createElement("div");
-    el.className = "me";
-    nav.marker = new maplibregl.Marker({ element: el }).setLngLat(pos).addTo(map);
-  } else {
-    nav.marker.setLngLat(pos);
-  }
+  updateUserLocation({ lng: pos[0], lat: pos[1] }, p.coords.heading);
 
   // Calcul et affichage de la vitesse réelle en km/h
   const rawSpeed = p.coords.speed;
@@ -1610,6 +1955,9 @@ function cancelTrip() {
   $("algo-controls-card")?.setAttribute("hidden", "");
   $("minimized-route-bar")?.setAttribute("hidden", "");
 
+  const compTable = $("comparison-table-body");
+  if (compTable) compTable.innerHTML = "";
+
   const routeDurationHero = $("route-duration-hero");
   if (routeDurationHero) routeDurationHero.textContent = "--";
   const routeDistanceHero = $("route-distance-hero");
@@ -1640,7 +1988,11 @@ function syncAlgoUI() {
 
   const badge = $("algo-badge-status");
   if (badge) {
-    badge.textContent = state.useContraction !== false ? "⚡ Hybride CH (Local)" : "⚡ Hybride A* (Local)";
+    if (state.activeRoute?.algorithm === "osrm") {
+      badge.textContent = "🌐 Réseau Routier OSRM";
+    } else {
+      badge.textContent = state.useContraction !== false ? "⚡ Hybride CH (Local)" : "⚡ Hybride A* (Local)";
+    }
   }
 }
 
@@ -1804,7 +2156,7 @@ function openSettingsModal() {
 
 function handleCriterionChange(newCriterion) {
   state.criterion = newCriterion;
-  try { localStorage.setItem("mon_maps_criterion", newCriterion); } catch {}
+  safeStorage.setItem("mon_maps_criterion", newCriterion);
   syncAlgoUI();
   const pts = getAllActivePoints();
   if (pts.length >= 2 && state.from && state.to) {
@@ -1825,7 +2177,7 @@ $("algo-criterion-select")?.addEventListener("change", (e) => handleCriterionCha
 
 $("settings-ch-toggle")?.addEventListener("change", (e) => {
   state.useContraction = e.target.checked;
-  try { localStorage.setItem("mon_maps_use_ch", String(e.target.checked)); } catch {}
+  safeStorage.setItem("mon_maps_use_ch", String(e.target.checked));
   if (window.ClientRouter?.ROUTER_CONFIG) {
     window.ClientRouter.ROUTER_CONFIG.useContraction = e.target.checked;
   }
@@ -1839,12 +2191,12 @@ $("settings-ch-toggle")?.addEventListener("change", (e) => {
 $("settings-vis-toggle")?.addEventListener("change", (e) => {
   state.visualizeAlgo = e.target.checked;
   if ($("algo-live-vis-toggle")) $("algo-live-vis-toggle").checked = e.target.checked;
-  try { localStorage.setItem("mon_maps_vis_algo", String(state.visualizeAlgo)); } catch {}
+  safeStorage.setItem("mon_maps_vis_algo", String(state.visualizeAlgo));
 });
 $("algo-live-vis-toggle")?.addEventListener("change", (e) => {
   state.visualizeAlgo = e.target.checked;
   if ($("settings-vis-toggle")) $("settings-vis-toggle").checked = e.target.checked;
-  try { localStorage.setItem("mon_maps_vis_algo", String(state.visualizeAlgo)); } catch {}
+  safeStorage.setItem("mon_maps_vis_algo", String(state.visualizeAlgo));
   const pts = getAllActivePoints();
   if (pts.length >= 2 && state.from && state.to) {
     computeRoutes();
@@ -1874,12 +2226,12 @@ $("voice-pitch-slider")?.addEventListener("input", (e) => {
 
 $("settings-announce-roundabouts")?.addEventListener("change", (e) => {
   state.announceRoundabouts = e.target.checked;
-  try { localStorage.setItem("mon_maps_roundabouts", String(e.target.checked)); } catch {}
+  safeStorage.setItem("mon_maps_roundabouts", String(e.target.checked));
 });
 
 $("settings-announce-carrefours")?.addEventListener("change", (e) => {
   state.announceCarrefours = e.target.checked;
-  try { localStorage.setItem("mon_maps_carrefours", String(e.target.checked)); } catch {}
+  safeStorage.setItem("mon_maps_carrefours", String(e.target.checked));
 });
 
 syncAlgoUI();
@@ -1913,7 +2265,7 @@ $("mute")?.addEventListener("click", () => {
 /* ---------- PWA ---------- */
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => {
-    navigator.serviceWorker.register("sw.js?v=12")
+    navigator.serviceWorker.register("sw.js?v=17")
       .then((reg) => reg.update())
       .catch(() => {});
   });
