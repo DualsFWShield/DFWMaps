@@ -997,48 +997,24 @@ async function computeRoutes() {
 
     const useCH = state.useContraction !== false;
 
-    // Calcul 100% autonome et local via le moteur hybride vectoriel sans API
-    const [fastest, shortest, eco, nohighway] = await Promise.all([
-      window.ClientRouter.computeAutonomousRoute(map, {
-        from: state.from,
-        to: state.to,
-        waypoints: state.waypoints,
-        mode: state.mode,
-        criterion: "fastest",
-        visualize: state.visualizeAlgo,
-        useContraction: useCH,
-        onProgress,
-      }),
-      window.ClientRouter.computeAutonomousRoute(map, {
-        from: state.from,
-        to: state.to,
-        waypoints: state.waypoints,
-        mode: state.mode,
-        criterion: "shortest",
-        visualize: false,
-        useContraction: useCH,
-      }),
-      window.ClientRouter.computeAutonomousRoute(map, {
-        from: state.from,
-        to: state.to,
-        waypoints: state.waypoints,
-        mode: state.mode,
-        criterion: "eco",
-        visualize: false,
-        useContraction: useCH,
-      }),
-      window.ClientRouter.computeAutonomousRoute(map, {
-        from: state.from,
-        to: state.to,
-        waypoints: state.waypoints,
-        mode: state.mode,
-        criterion: "nohighway",
-        visualize: false,
-        useContraction: useCH,
-      }),
-    ]);
+    // Calcul 100% autonome et local via le moteur hybride vectoriel sans API (factorisé : 1 graphe -> 4 critères)
+    const routes = await window.ClientRouter.computeMultiCriteriaRoute(map, {
+      from: state.from,
+      to: state.to,
+      waypoints: state.waypoints,
+      mode: state.mode,
+      criteria: ["fastest", "shortest", "eco", "nohighway"],
+      visualize: state.visualizeAlgo,
+      useContraction: useCH,
+      onProgress,
+    });
 
     if (run !== runId) return;
+
+    const fastest = routes?.fastest;
+    const shortest = routes?.shortest;
+    const eco = routes?.eco;
+    const nohighway = routes?.nohighway;
 
     if (badge) {
       badge.textContent = fastest?.algorithm === "hybrid-ch" ? "⚡ Hybride CH (Local)" : "⚡ Hybride A* (Local)";
@@ -1094,21 +1070,6 @@ async function computeRoutes() {
   showCurrentRoute(true);
 }
 
-// Convertit un résultat BRouter GeoJSON au format unifié
-function convertBrouterToRoute(feat, fallbackRoute = null) {
-  if (!feat) return fallbackRoute;
-  const props = feat.properties || {};
-  const coords = feat.geometry?.coordinates || [];
-  const dist = props["track-length"] || (fallbackRoute?.distance || 1000);
-  const dur = props["total-time"] || (fallbackRoute?.duration || 600);
-
-  return {
-    distance: dist,
-    duration: dur,
-    geometry: { type: "LineString", coordinates: coords },
-    legs: fallbackRoute?.legs || [{ steps: [] }],
-  };
-}
 
 function updateCriteriaUI() {
   document.querySelectorAll(".criteria-btn").forEach((btn) => {
@@ -1307,48 +1268,13 @@ function estimateSpeedLimit(step) {
               (state.userLocation ? [state.userLocation.lng, state.userLocation.lat] : null) || 
               (state.from ? [state.from.lng, state.from.lat] : null);
 
-  const name = (step?.name || "").toLowerCase();
-  const ref = (step?.ref || "").toLowerCase();
+  const name = step?.name || "";
+  const ref = step?.ref || "";
   const text = `${name} ${ref}`.trim();
 
-  // Résolution précise selon la classe de route et le pays (Belgique / France)
-  if (step?.roadClass && window.ClientRouter?.resolveSpeedLimit) {
-    return window.ClientRouter.resolveSpeedLimit(step.roadClass, step.maxspeed, state.mode, loc, text);
+  if (window.ClientRouter?.resolveSpeedLimit) {
+    return window.ClientRouter.resolveSpeedLimit(step?.roadClass || "street", step?.maxspeed, state.mode, loc, text);
   }
-
-  const isBelg = window.ClientRouter?.isBelgiumCoord ? window.ClientRouter.isBelgiumCoord(loc) : (loc && loc[0] >= 2.5 && loc[0] <= 6.45 && loc[1] >= 49.48 && loc[1] <= 51.52);
-  const isBru = window.ClientRouter?.isBrusselsCoord ? window.ClientRouter.isBrusselsCoord(loc) : (loc && loc[0] >= 4.24 && loc[0] <= 4.5 && loc[1] >= 50.76 && loc[1] <= 50.93);
-  const isFland = window.ClientRouter?.isFlandersCoord ? window.ClientRouter.isFlandersCoord(loc) : false;
-
-  if (isBelg) {
-    // Ring belge (R0 Ring de Bruxelles, R1, R2, R3, R8, R9...) -> 100 km/h
-    if (/(\br\s*\d+|\bring\b)/i.test(text)) return 100;
-    // Autoroutes belges (E411, E40, E19, E25, A1, A4...) -> STRICTEMENT 120 km/h en Belgique (jamais 130 !)
-    if (/(\b[ea]\s*\d+|\bautoroute\b)/i.test(text)) return 120;
-    // Voies express belges
-    if (/(\bexpress\b|\bvoie rapide\b)/i.test(text)) return 100;
-    // Routes nationales (N...)
-    if (/(\bn\s*\d+)/i.test(text)) {
-      if (isBru) return 50;
-      if (isFland) return 70; // 70 km/h par défaut hors agglomération en Flandre
-      return 90; // 90 km/h par défaut hors agglomération en Wallonie
-    }
-    // Bruxelles : règle générale par défaut "Ville 30" (depuis 2021)
-    if (isBru) return 30;
-    // Zones 30 ou rues piétonnes
-    if (/(zone 30|zone de rencontre|ruelle|piéton|sentier)/i.test(text)) return 30;
-    // Rues urbaines standard
-    if (/(rue|avenue|boulevard|allée|impasse|place|cours|chemin)/i.test(text)) return 50;
-    return 50;
-  }
-
-  // Règles France
-  if (/(\ba\s*\d+|\bautoroute\b)/i.test(text)) return 130;
-  if (/(\bn\s*\d+|\bvoie rapide\b|\bexpress\b)/i.test(text)) return 110;
-  if (/(périphérique|rocade|voie sur berge)/i.test(text)) return 70;
-  if (/(\bd\s*\d+)/i.test(text)) return 80;
-  if (/(zone 30|zone de rencontre|ruelle|piéton|sentier)/i.test(text)) return 30;
-  if (/(rue|avenue|boulevard|allée|impasse|place|cours|chemin)/i.test(text)) return 50;
 
   return 50;
 }
@@ -1873,6 +1799,7 @@ function openSettingsModal() {
 
   updateVoiceEngineUI();
   modal.showModal();
+  $("close-settings")?.focus();
 }
 
 function handleCriterionChange(newCriterion) {

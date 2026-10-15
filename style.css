@@ -7,6 +7,7 @@
   --bg-app: #f8fafc;
   --surface: rgba(255, 255, 255, 0.88);
   --surface-solid: #ffffff;
+  --surface-translucent: rgba(255, 255, 255, 0.82);
   --surface-subtle: rgba(241, 245, 249, 0.9);
   --surface-hover: rgba(226, 232, 240, 0.85);
   --surface-active: rgba(203, 213, 225, 0.95);
@@ -67,6 +68,7 @@ html[data-theme="auto"] {
     --bg-app: #090d16;
     --surface: rgba(15, 23, 42, 0.88);
     --surface-solid: #0f172a;
+    --surface-translucent: rgba(15, 23, 42, 0.82);
     --surface-subtle: rgba(30, 41, 59, 0.85);
     --surface-hover: rgba(51, 65, 85, 0.8);
     --surface-active: rgba(71, 85, 105, 0.85);
@@ -95,6 +97,7 @@ html[data-theme="auto"] {
   --bg-app: #090d16;
   --surface: rgba(15, 23, 42, 0.88);
   --surface-solid: #0f172a;
+  --surface-translucent: rgba(15, 23, 42, 0.82);
   --surface-subtle: rgba(30, 41, 59, 0.85);
   --surface-hover: rgba(51, 65, 85, 0.8);
   --surface-active: rgba(71, 85, 105, 0.85);

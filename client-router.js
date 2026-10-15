@@ -473,6 +473,7 @@ function decodeTile(buf, wanted) {
    TUILES : planification, téléchargement, cache
    ========================================================================== */
 const _tileCache = new Map();
+const _tileCacheMax = 500;
 let _tileTemplatePromise = null;
 
 function lngLatToTile(lng, lat, z) {
@@ -551,7 +552,12 @@ async function getTileTemplate() {
 
 async function fetchTile(z, x, y) {
   const key = `${z}/${x}/${y}`;
-  if (_tileCache.has(key)) return _tileCache.get(key);
+  if (_tileCache.has(key)) {
+    const cached = _tileCache.get(key);
+    _tileCache.delete(key);
+    _tileCache.set(key, cached);
+    return cached;
+  }
 
   const p = (async () => {
     const tpl = await getTileTemplate();
@@ -568,6 +574,10 @@ async function fetchTile(z, x, y) {
     return decodeTile(bytes, new Set(["transportation", "transportation_name"]));
   })();
 
+  if (_tileCache.size >= _tileCacheMax) {
+    const oldest = _tileCache.keys().next().value;
+    _tileCache.delete(oldest);
+  }
   _tileCache.set(key, p);
   p.catch(() => _tileCache.delete(key));
   return p;
@@ -1596,6 +1606,158 @@ async function computeAutonomousRoute(
   throw new Error(lastError);
 }
 
+/**
+ * Calcul multi-critères optimisé : un seul chargement de tuiles et un seul graphe,
+ * puis recherche de chemin pour chaque critère demandé.
+ * Retourne un objet { [criterion]: routeResult | null }.
+ */
+async function computeMultiCriteriaRoute(
+  map,
+  { from, to, waypoints = [], mode = "car", criteria = ["fastest"], visualize = false, onProgress = null, useContraction = ROUTER_CONFIG.useContraction }
+) {
+  if (!from || !to) throw new Error("Points de départ et d'arrivée requis");
+  const points = [from, ...waypoints.map((w) => w.pt || w), to];
+
+  const attempts = [
+    { ring: 1, zoomPenalty: 0 },
+    { ring: 2, zoomPenalty: 0 },
+    { ring: 3, zoomPenalty: 1 },
+  ];
+
+  let lastError = "Aucun itinéraire trouvé";
+
+  for (const att of attempts) {
+    const plan = chooseZoom(points, att.ring, ROUTER_CONFIG.maxZoom - att.zoomPenalty);
+    const t0 = performance.now();
+
+    /* 1. Charger les tuiles UNE SEULE FOIS */
+    let tiles;
+    try {
+      tiles = await loadTiles(plan, (done, total) =>
+        emitProgress(onProgress, `Chargement des tuiles ${done}/${total}`, { phase: "tiles", elapsedMs: Math.round(performance.now() - t0) })
+      );
+    } catch (err) {
+      lastError = err.message || String(err);
+      continue;
+    }
+
+    /* 2. Construire le graphe routier UNE SEULE FOIS */
+    emitProgress(onProgress, "Construction du graphe routier", { phase: "graph" });
+    const builder = new GraphBuilder();
+    for (const tile of tiles) ingestTile(builder, tile, plan.z, mode);
+    if (!builder.segs.length) { lastError = "Aucune route chargée dans cette zone"; continue; }
+    builder.keepLargestComponent();
+
+    /* 3. Projeter les points sur la route UNE SEULE FOIS */
+    const index = new SegmentIndex(builder);
+    const maxSnap = Math.max(ROUTER_CONFIG.maxSnapMeters, tileWidthMeters(plan.z, points[0].lat) * 0.25);
+    const snapped = [];
+    let snapFailed = false;
+    for (let i = 0; i < points.length; i++) {
+      const sn = index.snap(points[i].lng, points[i].lat, maxSnap);
+      if (!sn) { lastError = "Aucune route à proximité d'un des points"; snapFailed = true; break; }
+      snapped.push(sn);
+    }
+    if (snapFailed) continue;
+
+    /* 4. Pour chaque critère, construire les coûts et chercher le chemin */
+    const results = {};
+    let hasAny = false;
+
+    for (const criterion of criteria) {
+      try {
+        const graph = buildGraph(builder, mode, criterion);
+        const lb = lowerBoundPerMeter(mode, criterion);
+
+        let ch = null;
+        let usedCH = false;
+        if (useContraction && graph.live <= ROUTER_CONFIG.chMaxNodes) {
+          const isFirst = criterion === criteria[0];
+          ch = await ContractionHierarchy.build(graph, isFirst ? (p) => emitProgress(onProgress, `${p.algoName} ${p.pct}%`, { phase: "ch" }) : null);
+        }
+
+        const legs = [];
+        let searchFailed = false;
+        for (let i = 0; i < snapped.length - 1; i++) {
+          const src = snapped[i].node;
+          const dst = snapped[i + 1].node;
+          let edges = null;
+
+          if (ch) {
+            edges = ch.query(src, dst);
+            if (edges) usedCH = true;
+          }
+          if (!edges) {
+            const isVis = visualize && criterion === criteria[0];
+            edges = await bidirectionalAStar(graph, src, dst, { lb, visualize: isVis, onProgress: isVis ? onProgress : null });
+          }
+          if (!edges) { searchFailed = true; break; }
+
+          const coords = [[graph.lng[src], graph.lat[src]]];
+          let distance = 0;
+          let duration = 0;
+          for (const e of edges) {
+            coords.push(e.coordinates[1]);
+            distance += e.distance;
+            duration += e.baseDuration;
+          }
+          const steps = buildTurnByTurnInstructions(graph, edges, coords, mode);
+          if (i < snapped.length - 2 && steps.length) {
+            const last = steps[steps.length - 1];
+            last.name = "Étape";
+            last.maneuver.instruction = "Étape atteinte";
+          }
+          legs.push({ coords, distance, duration, steps });
+        }
+
+        if (searchFailed) { results[criterion] = null; continue; }
+
+        /* Assemblage final */
+        const allCoords = [];
+        const allSteps = [];
+        let distance = 0;
+        let duration = 0;
+        legs.forEach((leg, idx) => {
+          if (idx === 0) allCoords.push(...leg.coords);
+          else allCoords.push(...leg.coords.slice(1));
+          distance += leg.distance;
+          duration += leg.duration;
+          allSteps.push(...leg.steps);
+        });
+
+        const first = allCoords[0];
+        const last = allCoords[allCoords.length - 1];
+        if (haversineMeters([from.lng, from.lat], first) > 2) {
+          allCoords.unshift([from.lng, from.lat]);
+          distance += haversineMeters([from.lng, from.lat], first);
+        }
+        if (haversineMeters([to.lng, to.lat], last) > 2) {
+          allCoords.push([to.lng, to.lat]);
+          distance += haversineMeters([to.lng, to.lat], last);
+        }
+
+        results[criterion] = {
+          distance: Math.round(distance),
+          duration: Math.round(duration),
+          algorithm: usedCH ? "hybrid-ch" : "hybrid-astar",
+          zoom: plan.z,
+          geometry: { type: "LineString", coordinates: allCoords },
+          legs: [{ distance: Math.round(distance), duration: Math.round(duration), steps: allSteps }],
+        };
+        hasAny = true;
+      } catch (err) {
+        console.warn(`Criterion ${criterion} failed:`, err);
+        results[criterion] = null;
+      }
+    }
+
+    if (hasAny) return results;
+    lastError = "Aucun itinéraire trouvé pour les critères demandés";
+  }
+
+  throw new Error(lastError);
+}
+
 window.ClientRouter = {
   MinPriorityQueue,
   ROUTER_CONFIG,
@@ -1613,4 +1775,5 @@ window.ClientRouter = {
   bidirectionalAStar,
   decodeTile,
   computeAutonomousRoute,
+  computeMultiCriteriaRoute,
 };

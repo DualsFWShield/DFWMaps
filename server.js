@@ -214,11 +214,21 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  let reqPath = pathname;
+  let decodedPath;
+  try {
+    decodedPath = decodeURIComponent(pathname);
+  } catch {
+    res.statusCode = 400;
+    res.end("Bad Request");
+    return;
+  }
+
+  let reqPath = decodedPath;
   if (reqPath === "/" || reqPath === "") reqPath = "/index.html";
 
-  const safePath = path.normalize(path.join(__dirname, reqPath));
-  if (!safePath.startsWith(__dirname)) {
+  const rootDir = path.resolve(__dirname);
+  const safePath = path.resolve(rootDir, "." + (reqPath.startsWith("/") ? reqPath : "/" + reqPath));
+  if (safePath !== rootDir && !safePath.startsWith(rootDir + path.sep)) {
     res.statusCode = 403;
     res.end("Forbidden");
     return;
