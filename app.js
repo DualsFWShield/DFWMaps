@@ -2274,10 +2274,22 @@ window.addEventListener("orientationchange", () => {
   setTimeout(() => map?.resize(), 150);
 });
 
+// Détection du mode test/démo drive via URL (?drive=1)
+if (new URLSearchParams(window.location.search).has("drive")) {
+  document.body.classList.add("navigating");
+  if ($("banner-dist")) $("banner-dist").textContent = "120 m";
+  if ($("banner-text")) $("banner-text").textContent = "Serrez à droite sur Rue de la Loi";
+  if ($("eta")) $("eta").textContent = "21:15";
+  if ($("eta-sub")) $("eta-sub").textContent = "14 min restantes · 9.2 km";
+  if ($("current-speed-val")) $("current-speed-val").textContent = "48";
+  if ($("speed-limit-val")) $("speed-limit-val").textContent = "50";
+}
+
+
 /* ---------- PWA ---------- */
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => {
-    navigator.serviceWorker.register("sw.js?v=17")
+    navigator.serviceWorker.register("sw.js?v=18")
       .then((reg) => reg.update())
       .catch(() => {});
   });
