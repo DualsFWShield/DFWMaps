@@ -1531,13 +1531,20 @@ input:focus {
 #fab {
   position: absolute;
   z-index: 12;
-  right: 14px;
-  bottom: 20px;
+  right: calc(14px + env(safe-area-inset-right, 0px));
+  bottom: calc(20px + env(safe-area-inset-bottom, 0px));
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 8px;
   pointer-events: none;
+  max-height: calc(100vh - 24px);
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+
+#fab::-webkit-scrollbar {
+  display: none;
 }
 
 .fab-btn {
@@ -1883,7 +1890,12 @@ body.navigating #navbar {
   display: flex;
 }
 body.navigating #fab {
-  bottom: 84px;
+  bottom: calc(84px + env(safe-area-inset-bottom, 0px));
+}
+body.navigating #theme-toggle-fab,
+body.navigating #layers,
+body.navigating #settings-fab-btn {
+  display: none !important;
 }
 body.navigating .drive-hud-widget {
   display: flex;
@@ -1893,8 +1905,8 @@ body.navigating .drive-hud-widget {
 .drive-hud-widget {
   position: absolute;
   z-index: 25;
-  left: 16px;
-  bottom: 84px;
+  left: calc(16px + env(safe-area-inset-left, 0px));
+  bottom: calc(84px + env(safe-area-inset-bottom, 0px));
   display: none;
   align-items: center;
   gap: 12px;
@@ -2307,4 +2319,385 @@ body.navigating .drive-hud-widget {
   font-size: 11px;
   line-height: 1.3;
 }
+
+/* ==========================================================================
+   Mobile Horizontal / Landscape & Drive Mode Layout Optimizations
+   ========================================================================== */
+
+@media (orientation: landscape) and (max-height: 540px), (max-height: 480px) {
+  /* 1. Exploration Mode: Top Search Bar & Categories */
+  .search-bar-floating {
+    top: calc(8px + env(safe-area-inset-top, 0px)) !important;
+    left: calc(10px + env(safe-area-inset-left, 0px)) !important;
+    width: min(360px, calc(100vw - 75px)) !important;
+    max-width: 380px !important;
+    gap: 6px !important;
+  }
+
+  .search-input-pill {
+    padding: 3px 6px 3px 12px !important;
+  }
+
+  #quick-search-input {
+    height: 32px !important;
+    font-size: 13.5px !important;
+  }
+
+  .search-icon-wrap svg {
+    width: 16px !important;
+    height: 16px !important;
+  }
+
+  .icon-btn-search {
+    width: 30px !important;
+    height: 30px !important;
+  }
+
+  .btn-directions-shortcut {
+    height: 30px !important;
+    padding: 0 10px !important;
+    font-size: 12px !important;
+    gap: 4px !important;
+  }
+
+  .quick-category-chips {
+    gap: 5px !important;
+    padding: 2px 0 !important;
+  }
+
+  .category-chip {
+    padding: 3px 8px !important;
+    font-size: 11px !important;
+    height: 26px !important;
+  }
+
+  /* 2. Route Planning Panel */
+  .route-panel {
+    top: calc(8px + env(safe-area-inset-top, 0px)) !important;
+    left: calc(10px + env(safe-area-inset-left, 0px)) !important;
+    right: auto !important;
+    width: min(370px, calc(52vw - 10px)) !important;
+    max-height: calc(100vh - 16px - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px)) !important;
+    padding: 10px 12px !important;
+    gap: 8px !important;
+    border-radius: var(--radius-md) !important;
+  }
+
+  .brand-text h1 {
+    font-size: 15px !important;
+  }
+
+  .brand-badge {
+    font-size: 10px !important;
+  }
+
+  .icon-btn {
+    width: 30px !important;
+    height: 30px !important;
+  }
+
+  .icon-btn svg {
+    width: 15px !important;
+    height: 15px !important;
+  }
+
+  .input-pill {
+    min-height: 34px !important;
+    padding: 2px 8px 2px 10px !important;
+  }
+
+  .input-pill input {
+    font-size: 13px !important;
+  }
+
+  .mode-tab {
+    padding: 4px 8px !important;
+    font-size: 11.5px !important;
+    height: 30px !important;
+  }
+
+  .crit-chip {
+    padding: 3px 7px !important;
+    font-size: 10.5px !important;
+    height: 24px !important;
+  }
+
+  .route-overview-card {
+    padding: 8px 10px !important;
+    gap: 8px !important;
+  }
+
+  .duration-hero {
+    font-size: 18px !important;
+  }
+
+  .eta-pill {
+    font-size: 11px !important;
+    padding: 2px 6px !important;
+  }
+
+  .distance-hero {
+    font-size: 13.5px !important;
+  }
+
+  .btn-primary-action {
+    height: 36px !important;
+    font-size: 12.5px !important;
+    padding: 0 12px !important;
+  }
+
+  .btn-cancel-action {
+    height: 36px !important;
+    font-size: 12.5px !important;
+    padding: 0 8px !important;
+  }
+
+  .suggest {
+    max-height: 120px !important;
+    font-size: 12px !important;
+  }
+
+  /* 3. Minimized Route Bar */
+  .minimized-bar {
+    bottom: calc(8px + env(safe-area-inset-bottom, 0px)) !important;
+    left: calc(10px + env(safe-area-inset-left, 0px)) !important;
+    right: calc(10px + env(safe-area-inset-right, 0px)) !important;
+    max-width: 360px !important;
+    padding: 6px 12px !important;
+  }
+
+  .min-info b {
+    font-size: 13.5px !important;
+  }
+
+  .min-info span {
+    font-size: 11px !important;
+  }
+
+  .btn-mini-start {
+    height: 30px !important;
+    padding: 0 12px !important;
+    font-size: 12px !important;
+  }
+
+  /* 4. Drive Mode Navigation Banner (#banner) */
+  #banner {
+    top: calc(8px + env(safe-area-inset-top, 0px)) !important;
+    left: calc(12px + env(safe-area-inset-left, 0px)) !important;
+    right: auto !important;
+    width: min(340px, calc(100vw - 110px)) !important;
+    padding: 7px 11px !important;
+    gap: 9px !important;
+    border-radius: var(--radius-md) !important;
+    box-shadow: 0 10px 25px -4px rgba(0, 0, 0, 0.5) !important;
+  }
+
+  .banner-icon-badge {
+    width: 38px !important;
+    height: 38px !important;
+    border-radius: var(--radius-sm) !important;
+  }
+
+  .banner-icon-badge svg {
+    width: 22px !important;
+    height: 22px !important;
+  }
+
+  #banner b {
+    font-size: 19px !important;
+    line-height: 1.1 !important;
+  }
+
+  #banner-text {
+    font-size: 12.5px !important;
+    margin-top: 1px !important;
+  }
+
+  /* 5. Drive Mode Bottom Navigation Bar (#navbar) */
+  #navbar {
+    padding: 5px calc(14px + env(safe-area-inset-right, 0px)) calc(5px + env(safe-area-inset-bottom, 0px)) calc(14px + env(safe-area-inset-left, 0px)) !important;
+    gap: 8px !important;
+  }
+
+  #eta {
+    font-size: 16px !important;
+    line-height: 1.1 !important;
+  }
+
+  .eta-sub {
+    font-size: 11px !important;
+  }
+
+  .navbar-controls {
+    gap: 6px !important;
+  }
+
+  .navbar-controls .fab-btn.round {
+    width: 34px !important;
+    height: 34px !important;
+  }
+
+  .navbar-controls .fab-btn.round svg {
+    width: 16px !important;
+    height: 16px !important;
+  }
+
+  .btn-stop-nav {
+    height: 34px !important;
+    padding: 0 11px !important;
+    font-size: 12.5px !important;
+    gap: 6px !important;
+  }
+
+  .btn-stop-nav svg {
+    width: 13px !important;
+    height: 13px !important;
+  }
+
+  /* 6. Drive Mode Speedometer & Speed Limit HUD */
+  .drive-hud-widget {
+    left: calc(12px + env(safe-area-inset-left, 0px)) !important;
+    bottom: calc(48px + env(safe-area-inset-bottom, 0px)) !important;
+    gap: 8px !important;
+  }
+
+  .speed-limit-sign {
+    width: 38px !important;
+    height: 38px !important;
+    border-width: 3px !important;
+  }
+
+  .speed-limit-sign span {
+    font-size: 15px !important;
+  }
+
+  .speedometer-pill {
+    height: 38px !important;
+    padding: 0 10px !important;
+    gap: 3px !important;
+  }
+
+  .speed-number {
+    font-size: 20px !important;
+  }
+
+  .speed-unit {
+    font-size: 9.5px !important;
+  }
+
+  /* 7. Floating Action Buttons (#fab) */
+  #fab {
+    right: calc(10px + env(safe-area-inset-right, 0px)) !important;
+    bottom: calc(10px + env(safe-area-inset-bottom, 0px)) !important;
+    gap: 5px !important;
+    max-height: calc(100vh - 18px) !important;
+  }
+
+  .fab-btn.round {
+    width: 36px !important;
+    height: 36px !important;
+  }
+
+  .fab-btn.round svg {
+    width: 16px !important;
+    height: 16px !important;
+  }
+
+  #compass-needle {
+    width: 22px !important;
+    height: 22px !important;
+  }
+
+  .font-badge {
+    font-size: 11px !important;
+  }
+
+  body.navigating #fab {
+    bottom: calc(48px + env(safe-area-inset-bottom, 0px)) !important;
+  }
+
+  /* 8. Live Algorithm HUD in Landscape */
+  .algo-vis-hud {
+    top: calc(8px + env(safe-area-inset-top, 0px)) !important;
+    right: calc(10px + env(safe-area-inset-right, 0px)) !important;
+    left: auto !important;
+    transform: none !important;
+    width: min(280px, 38vw) !important;
+    padding: 6px 10px !important;
+    gap: 4px !important;
+  }
+
+  .algo-vis-title-wrap b {
+    font-size: 11.5px !important;
+  }
+
+  .btn-vis-skip {
+    padding: 2px 6px !important;
+    font-size: 10px !important;
+  }
+
+  .vis-stat-num {
+    font-size: 12px !important;
+  }
+
+  .vis-stat-label {
+    font-size: 9.5px !important;
+  }
+
+  /* 9. Dialogs in Landscape */
+  .layers-sheet {
+    inset: calc(6px + env(safe-area-inset-top, 0px)) calc(8px + env(safe-area-inset-right, 0px)) calc(6px + env(safe-area-inset-bottom, 0px)) auto !important;
+    width: min(320px, 44vw) !important;
+    max-height: calc(100vh - 12px) !important;
+    padding: 10px !important;
+    gap: 6px !important;
+  }
+
+  .layer-card {
+    padding: 6px 8px !important;
+    gap: 8px !important;
+  }
+
+  .layer-info b {
+    font-size: 12px !important;
+  }
+
+  .layer-info small {
+    font-size: 10px !important;
+  }
+
+  .settings-modal-dialog {
+    max-height: calc(100vh - 12px) !important;
+    width: min(520px, 94vw) !important;
+  }
+
+  .settings-modal-content {
+    max-height: calc(100vh - 65px) !important;
+    padding: 8px 12px !important;
+    gap: 8px !important;
+  }
+
+  .settings-section {
+    padding: 8px 10px !important;
+    gap: 6px !important;
+  }
+
+  .settings-section h3 {
+    font-size: 12.5px !important;
+  }
+
+  .section-desc {
+    font-size: 11px !important;
+  }
+
+  .sliders-grid {
+    grid-template-columns: 1fr 1fr !important;
+    gap: 8px !important;
+  }
+
+  .slider-field {
+    padding: 6px 8px !important;
+  }
+}
+
 

@@ -448,7 +448,11 @@ function toggleOrientationFollow() {
       let heading = null;
       if (e.webkitCompassHeading != null) heading = e.webkitCompassHeading;
       else if (e.alpha != null) heading = 360 - e.alpha;
-      if (heading != null) map.setBearing(heading);
+      if (heading != null) {
+        const screenAngle = window.screen?.orientation?.angle ?? (typeof window.orientation === "number" ? window.orientation : 0);
+        const correctedHeading = (heading + screenAngle + 360) % 360;
+        map.setBearing(correctedHeading);
+      }
     };
 
     if (typeof DeviceOrientationEvent.requestPermission === "function") {
@@ -1812,6 +1816,14 @@ $("mute")?.addEventListener("click", () => {
   }
 });
 
+/* ---------- Redimensionnement dynamique & Rotation mobile ---------- */
+window.addEventListener("resize", () => {
+  map?.resize();
+});
+window.addEventListener("orientationchange", () => {
+  setTimeout(() => map?.resize(), 150);
+});
+
 /* ---------- PWA ---------- */
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => {
@@ -1820,3 +1832,4 @@ if ("serviceWorker" in navigator) {
       .catch(() => {});
   });
 }
+
