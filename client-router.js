@@ -1,40 +1,54 @@
 "use strict";
 
 /* ==========================================================================
-   ClientRouter · Moteur d'itinéraire autonome et multi-algorithmes sans API
-   - 4 Algorithmes au choix de l'utilisateur :
-     1. 🐜 Colonie de Fourmis (ACO) : phéromones dynamiques & intelligence en essaim
-     2. ⚡ A* Classique : recherche heuristique admissible optimale
-     3. 🗺️ Moteur OpenStreetMap (OSRM) : hiérarchie autoroutière (Contraction Hierarchies)
-     4. 🚗 Moteur Waze & Google Maps : prédiction d'impédance, feux & pénalités de virages
-   - Réseau dorsal routier et autoroutier complet (zéro ligne droite)
-   - Extraction des tuiles vectorielles locales MapLibre / OpenFreeMap
-   - Visualisation temps réel du raisonnement et des phéromones
+   ClientRouter · Moteur d'itinéraire hybride, sans API de routage
+   --------------------------------------------------------------------------
+   Pipeline unique :
+     1. Les tuiles vectorielles OpenFreeMap (couche "transportation") sont
+        téléchargées le long du trajet et décodées localement (décodeur MVT
+        intégré, aucune dépendance).
+     2. Les segments sont soudés en un graphe routier orienté (sens uniques
+        respectés), on garde la plus grande composante connexe.
+     3. Départ / étapes / arrivée sont projetés SUR le segment de route le
+        plus proche (le segment est coupé en deux) : plus aucun connecteur
+        en ligne droite.
+     4. Recherche du chemin :
+          - Contraction Hierarchies (prétraitement + Dijkstra bidirectionnel
+            sur les graphes "montants") quand le graphe est assez petit,
+          - sinon A* bidirectionnel (potentiels moyens, Goldberg/Ikeda).
+        Les deux se replient l'un sur l'autre si nécessaire.
+   Aucune ligne droite entre villes : l'itinéraire n'est constitué que de
+   segments de routes réelles issus des tuiles.
    ========================================================================== */
 
-/**
- * File de priorité binaire (Min-Heap) O(log N)
- */
+const ROUTER_CONFIG = {
+  tileJsonUrl: "https://tiles.openfreemap.org/planet",
+  maxZoom: 14,          // plus fin = plus de détail, plus de tuiles
+  minZoom: 7,
+  maxTiles: 200,        // budget de tuiles par calcul
+  concurrency: 8,
+  useContraction: true, // false = toujours A* bidirectionnel
+  chMaxNodes: 40000,    // au-delà, le prétraitement CH n'est plus rentable
+  chTimeBudgetMs: 15000,
+  maxSnapMeters: 2500,  // distance max point -> route
+};
+
+/* --------------------------------------------------------------------------
+   File de priorité binaire (Min-Heap)
+   -------------------------------------------------------------------------- */
 class MinPriorityQueue {
-  constructor() {
-    this.heap = [];
-  }
-
-  size() {
-    return this.heap.length;
-  }
-
-  isEmpty() {
-    return this.heap.length === 0;
-  }
+  constructor() { this.heap = []; }
+  size() { return this.heap.length; }
+  isEmpty() { return this.heap.length === 0; }
+  clear() { this.heap.length = 0; }
+  peekPriority() { return this.heap.length ? this.heap[0].priority : null; }
 
   push(item, priority) {
-    const node = { item, priority };
-    this.heap.push(node);
+    this.heap.push({ item, priority });
     this._bubbleUp(this.heap.length - 1);
   }
 
-  pop() {
+  popEntry() {
     if (this.heap.length === 0) return null;
     const top = this.heap[0];
     const bottom = this.heap.pop();
@@ -42,7 +56,12 @@ class MinPriorityQueue {
       this.heap[0] = bottom;
       this._sinkDown(0);
     }
-    return top.item;
+    return top;
+  }
+
+  pop() {
+    const e = this.popEntry();
+    return e ? e.item : null;
   }
 
   _bubbleUp(idx) {
@@ -61,35 +80,23 @@ class MinPriorityQueue {
     const length = this.heap.length;
     const node = this.heap[idx];
     while (true) {
-      let leftChildIdx = (idx << 1) + 1;
-      let rightChildIdx = leftChildIdx + 1;
-      let swapIdx = null;
-
-      if (leftChildIdx < length) {
-        if (this.heap[leftChildIdx].priority < node.priority) {
-          swapIdx = leftChildIdx;
-        }
-      }
-
-      if (rightChildIdx < length) {
-        const rightChildPriority = this.heap[rightChildIdx].priority;
-        const comparePriority = swapIdx === null ? node.priority : this.heap[leftChildIdx].priority;
-        if (rightChildPriority < comparePriority) {
-          swapIdx = rightChildIdx;
-        }
-      }
-
-      if (swapIdx === null) break;
-      this.heap[idx] = this.heap[swapIdx];
-      idx = swapIdx;
+      const l = (idx << 1) + 1;
+      const r = l + 1;
+      let swap = -1;
+      let best = node.priority;
+      if (l < length && this.heap[l].priority < best) { swap = l; best = this.heap[l].priority; }
+      if (r < length && this.heap[r].priority < best) { swap = r; }
+      if (swap === -1) break;
+      this.heap[idx] = this.heap[swap];
+      idx = swap;
     }
     this.heap[idx] = node;
   }
 }
 
-/**
- * Distance orthodromique (Haversine) en mètres
- */
+/* --------------------------------------------------------------------------
+   Géométrie
+   -------------------------------------------------------------------------- */
 function haversineMeters(a, b) {
   const rad = Math.PI / 180;
   const dLat = (b[1] - a[1]) * rad;
@@ -100,9 +107,6 @@ function haversineMeters(a, b) {
   return 2 * 6371000 * Math.asin(Math.sqrt(Math.min(1, x)));
 }
 
-/**
- * Azimut (bearing) en degrés [0, 360[
- */
 function calculateBearing(p1, p2) {
   const rad = Math.PI / 180;
   const y = Math.sin((p2[0] - p1[0]) * rad) * Math.cos(p2[1] * rad);
@@ -112,535 +116,1359 @@ function calculateBearing(p1, p2) {
   return (Math.atan2(y, x) * (180 / Math.PI) + 360) % 360;
 }
 
-/**
- * Propriétés et limitations de vitesse des routes françaises/européennes
- */
+/* --------------------------------------------------------------------------
+   Propriétés des routes & Détection géographique (Belgique / France)
+   -------------------------------------------------------------------------- */
 const ROAD_PROPERTIES = {
-  motorway:      { baseSpeed: 130, urbanSpeed: 110, bikeAllowed: false, footAllowed: false, fuelDrag: 1.35, label: "Autoroute" },
-  trunk:         { baseSpeed: 110, urbanSpeed: 90,  bikeAllowed: false, footAllowed: false, fuelDrag: 1.20, label: "Voie express" },
-  primary:       { baseSpeed: 80,  urbanSpeed: 50,  bikeAllowed: true,  footAllowed: true,  fuelDrag: 1.00, label: "Route principale" },
-  secondary:     { baseSpeed: 80,  urbanSpeed: 50,  bikeAllowed: true,  footAllowed: true,  fuelDrag: 0.98, label: "Route départementale" },
-  tertiary:      { baseSpeed: 70,  urbanSpeed: 50,  bikeAllowed: true,  footAllowed: true,  fuelDrag: 0.97, label: "Route locale" },
-  minor:         { baseSpeed: 50,  urbanSpeed: 50,  bikeAllowed: true,  footAllowed: true,  fuelDrag: 1.02, label: "Rue" },
-  street:        { baseSpeed: 50,  urbanSpeed: 30,  bikeAllowed: true,  footAllowed: true,  fuelDrag: 1.05, label: "Rue urbaine" },
-  residential:   { baseSpeed: 30,  urbanSpeed: 30,  bikeAllowed: true,  footAllowed: true,  fuelDrag: 1.10, label: "Zone résidentielle" },
-  living_street: { baseSpeed: 20,  urbanSpeed: 20,  bikeAllowed: true,  footAllowed: true,  fuelDrag: 1.15, label: "Zone de rencontre" },
-  service:       { baseSpeed: 20,  urbanSpeed: 20,  bikeAllowed: true,  footAllowed: true,  fuelDrag: 1.15, label: "Voie de service" },
-  track:         { baseSpeed: 25,  urbanSpeed: 20,  bikeAllowed: true,  footAllowed: true,  fuelDrag: 1.25, label: "Chemin" },
-  cycleway:      { baseSpeed: 25,  urbanSpeed: 25,  bikeAllowed: true,  footAllowed: true,  fuelDrag: 0.85, label: "Piste cyclable" },
-  path:          { baseSpeed: 15,  urbanSpeed: 15,  bikeAllowed: true,  footAllowed: true,  fuelDrag: 0.90, label: "Sentier" },
-  footway:       { baseSpeed: 6,   urbanSpeed: 6,   bikeAllowed: false, footAllowed: true,  fuelDrag: 0.95, label: "Voie piétonne" },
-  pedestrian:    { baseSpeed: 15,  urbanSpeed: 10,  bikeAllowed: true,  footAllowed: true,  fuelDrag: 0.95, label: "Rue piétonne" },
+  motorway:    { baseSpeed: 130, carSpeed: 120, fuelDrag: 1.35, label: "Autoroute" },
+  trunk:       { baseSpeed: 110, carSpeed: 100, fuelDrag: 1.20, label: "Voie express" },
+  primary:     { baseSpeed: 80,  carSpeed: 70,  fuelDrag: 1.00, label: "Route principale" },
+  secondary:   { baseSpeed: 80,  carSpeed: 60,  fuelDrag: 0.98, label: "Route secondaire" },
+  tertiary:    { baseSpeed: 70,  carSpeed: 50,  fuelDrag: 0.97, label: "Route locale" },
+  minor:       { baseSpeed: 50,  carSpeed: 35,  fuelDrag: 1.02, label: "Rue" },
+  street:      { baseSpeed: 50,  carSpeed: 30,  fuelDrag: 1.05, label: "Rue" },
+  residential: { baseSpeed: 30,  carSpeed: 30,  fuelDrag: 1.10, label: "Zone résidentielle" },
+  service:     { baseSpeed: 20,  carSpeed: 15,  fuelDrag: 1.15, label: "Voie de service" },
+  track:       { baseSpeed: 25,  carSpeed: 20,  fuelDrag: 1.25, label: "Chemin" },
+  cycleway:    { baseSpeed: 25,  carSpeed: 20,  fuelDrag: 0.95, label: "Piste cyclable" },
+  path:        { baseSpeed: 15,  carSpeed: 10,  fuelDrag: 0.95, label: "Sentier" },
+  footway:     { baseSpeed: 6,   carSpeed: 5,   fuelDrag: 0.95, label: "Voie piétonne" },
+  pedestrian:  { baseSpeed: 15,  carSpeed: 10,  fuelDrag: 0.95, label: "Rue piétonne" },
 };
 
-function resolveSpeedLimit(roadClass, maxspeed, mode = "car") {
-  if (mode === "foot") return 6;
-  if (mode === "bike") return 25;
-  if (maxspeed && !isNaN(Number(maxspeed)) && Number(maxspeed) > 0) {
-    return Number(maxspeed);
+function isBelgiumCoord(coord) {
+  if (!coord || !Array.isArray(coord) || coord.length < 2) return false;
+  const lng = Number(coord[0]), lat = Number(coord[1]);
+  if (isNaN(lng) || isNaN(lat)) return false;
+  return lng >= 2.50 && lng <= 6.45 && lat >= 49.48 && lat <= 51.52;
+}
+
+function isBrusselsCoord(coord) {
+  if (!coord || !Array.isArray(coord) || coord.length < 2) return false;
+  const lng = Number(coord[0]), lat = Number(coord[1]);
+  if (isNaN(lng) || isNaN(lat)) return false;
+  return lng >= 4.24 && lng <= 4.50 && lat >= 50.76 && lat <= 50.93;
+}
+
+function isFlandersCoord(coord) {
+  if (!isBelgiumCoord(coord)) return false;
+  if (isBrusselsCoord(coord)) return false;
+  const lng = Number(coord[0]), lat = Number(coord[1]);
+  if (lat >= 50.78) return true;
+  if (lat >= 50.68 && lng < 4.05) return true;
+  return false;
+}
+
+function resolveSpeedLimit(roadClass, maxspeed, mode = "car", location = null, roadName = "") {
+  if (mode === "foot") return 5;
+  if (mode === "bike") return 18;
+  if (maxspeed && !isNaN(Number(maxspeed)) && Number(maxspeed) > 0) return Number(maxspeed);
+
+  const cls = (roadClass || "street").toLowerCase();
+  const text = String(roadName || "").toLowerCase();
+
+  // Réglementation routière spécifique à la Belgique
+  if (isBelgiumCoord(location)) {
+    const inBru = isBrusselsCoord(location);
+    const inFland = isFlandersCoord(location);
+
+    // Ring belge (R0 Ring de Bruxelles, R1 Ring d'Anvers, R2, R3...) -> 100 km/h (ou 90)
+    if (/(\br\s*\d+|\bring\b)/i.test(text)) return 100;
+
+    // Autoroutes belges (E411, E40, E19, E25, E42, A1, A4...) -> STRICTEMENT 120 km/h (jamais 130 km/h !)
+    if (cls === "motorway" || /(\b[ea]\s*\d+|\bautoroute\b)/i.test(text)) return 120;
+
+    // Voies express / voies rapides 2x2
+    if (cls === "trunk" || /(\bexpress\b|\bvoie rapide\b)/i.test(text)) return 100;
+
+    // Routes nationales et secondaires
+    if (cls === "primary" || cls === "secondary") {
+      if (inBru) return 50; // Grands axes bruxellois à 50
+      if (inFland) return 70; // Flandre : 70 km/h par défaut hors agglomération
+      return 90; // Wallonie : 90 km/h par défaut hors agglomération
+    }
+
+    if (cls === "tertiary") {
+      if (inBru) return 30;
+      if (inFland) return 70;
+      return 70;
+    }
+
+    // Zones résidentielles & zones de rencontre
+    if (cls === "residential" || cls === "living_street") return 30;
+
+    // Voirie urbaine standard : Bruxelles est à 30 km/h généralisé ("Ville 30") depuis 2021
+    if (cls === "minor" || cls === "street") {
+      return inBru ? 30 : 50;
+    }
+
+    return inBru ? 30 : 50;
   }
-  const normalized = (roadClass || "street").toLowerCase();
-  const info = ROAD_PROPERTIES[normalized] || ROAD_PROPERTIES.street;
+
+  // Réglementation France / Standard par défaut
+  const info = ROAD_PROPERTIES[cls] || ROAD_PROPERTIES.street;
   return info.baseSpeed;
 }
 
-/* ==========================================================================
-   RÉSEAU DORSAL NATIONAL & EUROPÉEN (Évite TOUTE ligne droite inter-villes)
-   ========================================================================== */
-const NATIONAL_HIGHWAY_CORRIDORS = [
-  // A1: Paris - Lille - Belgique (E19/Bruxelles)
-  { name: "Autoroute du Nord", ref: "A 1", class: "motorway", coords: [
-    [2.3522, 48.8566], [2.3601, 48.9100], [2.4500, 49.0200], [2.6500, 49.3500],
-    [2.8000, 49.8000], [2.9500, 50.1500], [3.0500, 50.5000], [3.0600, 50.6300],
-    [3.1800, 50.7000], [3.2500, 50.7500], [4.3517, 50.8503]
-  ]},
-  // A2: A1 vers Cambrai - Valenciennes - Mons - Bruxelles
-  { name: "Autoroute A2", ref: "A 2", class: "motorway", coords: [
-    [2.8500, 49.9500], [3.2000, 50.1500], [3.5000, 50.3500], [3.9500, 50.4500], [4.3517, 50.8503]
-  ]},
-  // A4: Paris - Reims - Metz - Strasbourg
-  { name: "Autoroute de l'Est", ref: "A 4", class: "motorway", coords: [
-    [2.3522, 48.8566], [2.6000, 48.8700], [3.0500, 48.9500], [3.5000, 49.0500],
-    [4.0300, 49.2500], [4.8000, 49.1500], [5.5000, 49.1200], [6.1700, 49.1200],
-    [7.0000, 48.9000], [7.7500, 48.5800]
-  ]},
-  // A6: Paris - Auxerre - Dijon - Beaune - Lyon
-  { name: "Autoroute du Soleil", ref: "A 6", class: "motorway", coords: [
-    [2.3522, 48.8566], [2.4000, 48.7000], [2.6500, 48.4000], [3.0000, 48.1000],
-    [3.5700, 47.8000], [4.1000, 47.4500], [4.8400, 47.0200], [4.8300, 46.3000],
-    [4.8357, 45.7640]
-  ]},
-  // A7: Lyon - Valence - Orange - Avignon - Marseille
-  { name: "Autoroute du Soleil", ref: "A 7", class: "motorway", coords: [
-    [4.8357, 45.7640], [4.8700, 45.5000], [4.9000, 44.9500], [4.8500, 44.5000],
-    [4.8000, 44.1500], [4.8500, 43.9000], [5.1000, 43.6000], [5.3698, 43.2965]
-  ]},
-  // A10: Paris - Orléans - Tours - Poitiers - Bordeaux
-  { name: "L'Aquitaine", ref: "A 10", class: "motorway", coords: [
-    [2.3522, 48.8566], [2.2500, 48.6500], [2.0000, 48.4000], [1.9093, 47.9029],
-    [1.4000, 47.6000], [0.6848, 47.3941], [0.5000, 47.0000], [0.3400, 46.5800],
-    [0.1000, 46.0000], [-0.5000, 45.3000], [-0.5792, 44.8378]
-  ]},
-  // A71: Orléans - Vierzon - Bourges - Clermont-Ferrand
-  { name: "L'Arverne", ref: "A 71", class: "motorway", coords: [
-    [1.9093, 47.9029], [2.0000, 47.6000], [2.0700, 47.2200], [2.3900, 47.0800],
-    [2.5000, 46.8000], [2.7000, 46.4000], [3.0870, 45.7772]
-  ]},
-  // A20: Vierzon - Châteauroux - Limoges - Brive - Toulouse
-  { name: "L'Occitane", ref: "A 20", class: "motorway", coords: [
-    [2.0700, 47.2200], [1.7000, 46.8100], [1.4000, 46.3000], [1.2600, 45.8300],
-    [1.5000, 45.1500], [1.5000, 44.4500], [1.4442, 43.6047]
-  ]},
-  // A11: Paris - Chartres - Le Mans - Angers - Nantes
-  { name: "L'Océane", ref: "A 11", class: "motorway", coords: [
-    [2.3522, 48.8566], [1.5000, 48.4500], [0.2000, 48.0000], [-0.5500, 47.4700], [-1.5536, 47.2184]
-  ]},
-  // A13: Paris - Mantes - Rouen - Caen
-  { name: "Autoroute de Normandie", ref: "A 13", class: "motorway", coords: [
-    [2.3522, 48.8566], [1.7000, 48.9800], [1.2000, 49.3000], [1.0999, 49.4432], [-0.3707, 49.1829]
-  ]},
-  // A89: Bordeaux - Brive - Clermont-Ferrand - Lyon
-  { name: "La Transeuropéenne", ref: "A 89", class: "motorway", coords: [
-    [-0.5792, 44.8378], [0.3000, 45.0000], [1.5000, 45.1500], [2.2000, 45.4000],
-    [3.0870, 45.7772], [4.1000, 45.8500], [4.8357, 45.7640]
-  ]},
-  // N151 / D940: Bourges vers La Châtre / Centre
-  { name: "Route Centre", ref: "N 151", class: "primary", coords: [
-    [2.3900, 47.0800], [2.2500, 46.7500], [2.0000, 46.5000], [1.9000, 46.3000]
-  ]},
-];
-
-/**
- * Graphe routier topologique avec grille spatiale
- */
-class RoadGraph {
-  constructor() {
-    this.nodes = new Map(); // id -> { id, lng, lat, neighbors: [{ targetId, edge }] }
-    this.edges = [];
-    this.spatialGrid = new Map();
-    this.gridCellSize = 0.01; // ~1 km
-    this.pheromones = new Map(); // edgeId -> tau
+/** Classe "interne" à partir des attributs d'une tuile OpenMapTiles. */
+function resolveClass(props) {
+  const c = props.class;
+  if (c === "path") {
+    const sub = props.subclass;
+    if (sub === "cycleway") return "cycleway";
+    if (sub === "pedestrian") return "pedestrian";
+    if (sub === "footway" || sub === "steps" || sub === "corridor" || sub === "platform") return "footway";
+    return "path";
   }
+  return c;
+}
 
-  _nodeKey(lng, lat) {
-    return `${lng.toFixed(5)},${lat.toFixed(5)}`;
-  }
-
-  _gridKey(lng, lat) {
-    const gx = Math.floor(lng / this.gridCellSize);
-    const gy = Math.floor(lat / this.gridCellSize);
-    return `${gx}:${gy}`;
-  }
-
-  addNode(lng, lat) {
-    const key = this._nodeKey(lng, lat);
-    let node = this.nodes.get(key);
-    if (!node) {
-      node = { id: key, lng, lat, neighbors: [] };
-      this.nodes.set(key, node);
-
-      const gKey = this._gridKey(lng, lat);
-      let cell = this.spatialGrid.get(gKey);
-      if (!cell) {
-        cell = [];
-        this.spatialGrid.set(gKey, cell);
-      }
-      cell.push(key);
-    }
-    return node;
-  }
-
-  addEdge(nodeA, nodeB, props = {}) {
-    if (nodeA.id === nodeB.id) return null;
-    const dist = haversineMeters([nodeA.lng, nodeA.lat], [nodeB.lng, nodeB.lat]);
-    if (dist < 0.5) return null;
-
-    const roadClass = (props.class || "street").toLowerCase();
-    const speedLimit = resolveSpeedLimit(roadClass, props.maxspeed, "car");
-    const speedMs = Math.max(1, (speedLimit * 1000) / 3600);
-    const baseDuration = dist / speedMs;
-
-    const edge = {
-      id: `${nodeA.id}->${nodeB.id}`,
-      from: nodeA.id,
-      to: nodeB.id,
-      distance: dist,
-      baseDuration,
-      speedLimit,
-      roadClass,
-      name: props.name || "",
-      ref: props.ref || "",
-      isConnector: Boolean(props.isConnector),
-      isRoundabout: Boolean(props.roundabout || props.junction === "roundabout" || roadClass === "roundabout"),
-      isRamp: Boolean(props.ramp || roadClass.includes("link")),
-      oneway: Boolean(props.oneway && props.oneway !== 0 && props.oneway !== "0"),
-      coordinates: [[nodeA.lng, nodeA.lat], [nodeB.lng, nodeB.lat]],
-    };
-
-    nodeA.neighbors.push({ targetId: nodeB.id, edge });
-    this.edges.push(edge);
-    this.pheromones.set(edge.id, 1.0);
-
-    if (!edge.oneway) {
-      const revEdge = {
-        ...edge,
-        id: `${nodeB.id}->${nodeA.id}`,
-        from: nodeB.id,
-        to: nodeA.id,
-        coordinates: [[nodeB.lng, nodeB.lat], [nodeA.lng, nodeA.lat]],
-      };
-      nodeB.neighbors.push({ targetId: nodeA.id, edge: revEdge });
-      this.edges.push(revEdge);
-      this.pheromones.set(revEdge.id, 1.0);
-    }
-
-    return edge;
-  }
-
-  findNearestNodes(lng, lat, count = 4, maxRadiusMeters = 45000) {
-    const origin = [lng, lat];
-    const results = [];
-    const centerGx = Math.floor(lng / this.gridCellSize);
-    const centerGy = Math.floor(lat / this.gridCellSize);
-
-    for (let dx = -4; dx <= 4; dx++) {
-      for (let dy = -4; dy <= 4; dy++) {
-        const cell = this.spatialGrid.get(`${centerGx + dx}:${centerGy + dy}`);
-        if (cell) {
-          for (const nodeId of cell) {
-            const n = this.nodes.get(nodeId);
-            if (n) {
-              const d = haversineMeters(origin, [n.lng, n.lat]);
-              if (d <= maxRadiusMeters) {
-                results.push({ node: n, dist: d });
-              }
-            }
-          }
-        }
-      }
-    }
-
-    if (results.length < count) {
-      for (const n of this.nodes.values()) {
-        const d = haversineMeters(origin, [n.lng, n.lat]);
-        if (d <= maxRadiusMeters) {
-          results.push({ node: n, dist: d });
-        }
-      }
-    }
-
-    results.sort((a, b) => a.dist - b.dist);
-    const unique = [];
-    const seen = new Set();
-    for (const r of results) {
-      if (!seen.has(r.node.id)) {
-        seen.add(r.node.id);
-        unique.push(r);
-        if (unique.length >= count) break;
-      }
-    }
-    return unique;
-  }
-
-  findNearestNode(lng, lat, maxRadiusMeters = 45000) {
-    const list = this.findNearestNodes(lng, lat, 1, maxRadiusMeters);
-    return list[0]?.node || null;
-  }
-
-  connectPoint(pt, label = "Point") {
-    const existing = this.nodes.get(this._nodeKey(pt.lng, pt.lat));
-    if (existing) return existing;
-
-    const node = this.addNode(pt.lng, pt.lat);
-    const nearestCandidates = this.findNearestNodes(pt.lng, pt.lat, 4, 45000);
-    for (const { node: nearNode } of nearestCandidates) {
-      if (nearNode && nearNode.id !== node.id) {
-        this.addEdge(node, nearNode, { class: "street", isConnector: true });
-        this.addEdge(nearNode, node, { class: "street", isConnector: true });
-      }
-    }
-    return node;
+/** Une classe de route est-elle utilisable pour ce mode ? */
+function isClassAllowed(cls, mode) {
+  switch (mode) {
+    case "foot":
+      return ["primary", "secondary", "tertiary", "minor", "service", "track", "path", "cycleway", "footway", "pedestrian"].includes(cls);
+    case "bike":
+      return ["primary", "secondary", "tertiary", "minor", "service", "track", "path", "cycleway", "pedestrian"].includes(cls);
+    default:
+      return ["motorway", "trunk", "primary", "secondary", "tertiary", "minor", "service"].includes(cls);
   }
 }
 
-/**
- * Construit un graphe unifié intégrant tuiles vectorielles locales ET le réseau national
- */
-function buildCompleteRoadGraph(features, fromPt, toPt) {
-  const graph = new RoadGraph();
-
-  // 1. Injecter le réseau dorsal national et autoroutier (garantit zéro ligne droite)
-  for (const cor of NATIONAL_HIGHWAY_CORRIDORS) {
-    for (let i = 0; i < cor.coords.length - 1; i++) {
-      const p1 = cor.coords[i];
-      const p2 = cor.coords[i + 1];
-      const n1 = graph.addNode(p1[0], p1[1]);
-      const n2 = graph.addNode(p2[0], p2[1]);
-      graph.addEdge(n1, n2, { class: cor.class, name: cor.name, ref: cor.ref });
-    }
-  }
-
-  // 2. Injecter les rues locales vectorielles extraites de MapLibre
-  for (const feat of features) {
-    const geom = feat.geometry;
-    if (!geom) continue;
-
-    const props = feat.properties || {};
-    const coordsList = geom.type === "LineString"
-      ? [geom.coordinates]
-      : geom.type === "MultiLineString"
-      ? geom.coordinates
-      : [];
-
-    for (const coords of coordsList) {
-      if (!coords || coords.length < 2) continue;
-      for (let i = 0; i < coords.length - 1; i++) {
-        const p1 = coords[i];
-        const p2 = coords[i + 1];
-        if (!p1 || !p2) continue;
-        const nA = graph.addNode(p1[0], p1[1]);
-        const nB = graph.addNode(p2[0], p2[1]);
-        graph.addEdge(nA, nB, {
-          ...props,
-          name: props.name || props.name_fr || props.name_en || "",
-          ref: props.ref || "",
-          class: props.class || "street",
-          roundabout: Boolean(props.junction === "roundabout" || props.roundabout || props.class === "roundabout"),
-          ramp: Boolean(props.ramp || (props.class && props.class.includes("link"))),
-        });
-      }
-    }
-  }
-
-  // 3. Connecter Départ et Destination
-  if (fromPt) graph.connectPoint(fromPt, "Départ");
-  if (toPt) graph.connectPoint(toPt, "Arrivée");
-
-  return graph;
-}
-
-/**
- * Calcul du coût d'arête selon le profil
- */
-function calculateEdgeCost(edge, mode = "car", criterion = "fastest") {
-  const roadClass = edge.roadClass || "street";
-  const info = ROAD_PROPERTIES[roadClass] || ROAD_PROPERTIES.street;
+/** Durée réelle (s), coût d'optimisation et vitesse affichée pour un segment. */
+function arcCosts(cls, dist, mode, criterion, coord = null, name = "", ref = "") {
+  const info = ROAD_PROPERTIES[cls] || ROAD_PROPERTIES.street;
 
   if (mode === "foot") {
-    if (!info.footAllowed && (roadClass === "motorway" || roadClass === "trunk")) return Infinity;
-    return edge.distance / (4.5 / 3.6);
+    const kmh = cls === "pedestrian" || cls === "footway" ? 5.2 : cls === "steps" ? 3.0 : 4.8;
+    const duration = dist / (kmh / 3.6);
+    let cost = duration;
+    if (criterion === "shortest") {
+      cost = dist;
+    } else if (criterion === "eco") {
+      // Voies piétonnes calmes et parcs privilégiés, axes bruyants découragés
+      const factor = cls === "pedestrian" || cls === "footway" || cls === "path" ? 0.75 : cls === "primary" ? 1.8 : cls === "secondary" ? 1.4 : 1.0;
+      cost = duration * factor;
+    } else if (criterion === "nohighway") {
+      // Évitement strict des axes routiers majeurs
+      const isMajorRoad = cls === "primary" || cls === "secondary" || cls === "trunk";
+      cost = isMajorRoad ? duration * 8 : duration;
+    }
+    return { duration, cost, speed: Math.round(kmh) };
   }
 
   if (mode === "bike") {
-    if (!info.bikeAllowed && (roadClass === "motorway" || roadClass === "trunk")) return Infinity;
-    const bikeSpeedMs = (roadClass === "cycleway" ? 25 : 18) / 3.6;
-    const factor = roadClass === "cycleway" ? 0.7 : roadClass === "primary" ? 1.4 : 1.0;
-    return (edge.distance / bikeSpeedMs) * factor;
+    const kmh = cls === "cycleway" ? 22 : cls === "path" || cls === "track" ? 14 : cls === "pedestrian" ? 6 : 18;
+    const duration = dist / (kmh / 3.6);
+    let cost = duration;
+    if (criterion === "shortest") {
+      cost = dist;
+    } else if (criterion === "eco") {
+      // Priorité maximale aux pistes cyclables dédiées et voies vertes sécurisées
+      const factor = cls === "cycleway" ? 0.5 : cls === "path" ? 0.8 : cls === "primary" ? 2.5 : cls === "secondary" ? 1.8 : 1.0;
+      cost = duration * factor;
+    } else if (criterion === "nohighway") {
+      // Éviter complètement les grands axes routiers
+      const isMajor = cls === "primary" || cls === "secondary" || cls === "trunk";
+      cost = isMajor ? duration * 25 : (cls === "cycleway" ? duration * 0.6 : duration);
+    } else {
+      // Fastest
+      const factor = cls === "cycleway" ? 0.7 : cls === "primary" ? 1.3 : cls === "secondary" ? 1.15 : cls === "path" ? 1.1 : 1.0;
+      cost = duration * factor;
+    }
+    return { duration, cost, speed: kmh };
   }
 
-  // Mode Voiture (Car)
+  let baseSpeed = info.baseSpeed;
+  let carSpeed = info.carSpeed;
+
+  // Ajustement dynamique si le segment est situé en Belgique
+  if (isBelgiumCoord(coord)) {
+    const inBru = isBrusselsCoord(coord);
+    const inFland = isFlandersCoord(coord);
+    const text = `${name || ""} ${ref || ""}`.toLowerCase();
+
+    if (/(\br\s*\d+|\bring\b)/i.test(text)) {
+      baseSpeed = 100;
+      carSpeed = 95;
+    } else if (cls === "motorway" || /(\b[ea]\s*\d+|\bautoroute\b)/i.test(text)) {
+      baseSpeed = 120;
+      carSpeed = 115;
+    } else if (cls === "trunk") {
+      baseSpeed = 100;
+      carSpeed = 95;
+    } else if (cls === "primary" || cls === "secondary") {
+      if (inBru) {
+        baseSpeed = 50;
+        carSpeed = 40;
+      } else if (inFland) {
+        baseSpeed = 70;
+        carSpeed = 60;
+      } else {
+        baseSpeed = 90;
+        carSpeed = 75;
+      }
+    } else if (cls === "tertiary") {
+      baseSpeed = inBru ? 30 : 70;
+      carSpeed = inBru ? 25 : 55;
+    } else if (cls === "minor" || cls === "street") {
+      baseSpeed = inBru ? 30 : 50;
+      carSpeed = inBru ? 25 : 32;
+    } else if (cls === "residential") {
+      baseSpeed = 30;
+      carSpeed = 25;
+    }
+  }
+
+  const duration = dist / (carSpeed / 3.6);
+  const isHighway = cls === "motorway" || cls === "trunk";
+  let cost;
   switch (criterion) {
-    case "shortest":
-      return edge.distance;
-    case "eco":
-      return edge.distance * (info.fuelDrag || 1.0);
-    case "nohighway":
-      if (roadClass === "motorway" || roadClass === "trunk") return edge.baseDuration * 50;
-      return edge.baseDuration;
-    case "fastest":
-    default:
-      return edge.baseDuration;
+    case "shortest": cost = dist; break;
+    case "eco": cost = dist * info.fuelDrag; break;
+    case "nohighway": cost = isHighway ? duration * 50 : duration; break;
+    default: cost = duration;
+  }
+  return { duration, cost, speed: baseSpeed };
+}
+
+/** Borne inférieure du coût par mètre (heuristique A* admissible). */
+function lowerBoundPerMeter(mode, criterion) {
+  if (criterion === "shortest") return 1;
+  if (mode === "foot") return 1 / (5.2 / 3.6);
+  if (mode === "bike") return 0.5 / (22 / 3.6);
+  if (criterion === "eco") return 0.95;
+  return 1 / (130 / 3.6);
+}
+
+/* ==========================================================================
+   DÉCODEUR MVT (Mapbox Vector Tile) minimal — aucune dépendance
+   ========================================================================== */
+const _utf8 = new TextDecoder("utf-8");
+
+function readVarint(buf, st) {
+  let r = 0;
+  let m = 1;
+  let b;
+  do {
+    b = buf[st.p++];
+    r += (b & 0x7f) * m;
+    m *= 128;
+  } while (b & 0x80);
+  return r;
+}
+
+function skipField(buf, st, wireType) {
+  if (wireType === 0) readVarint(buf, st);
+  else if (wireType === 1) st.p += 8;
+  else if (wireType === 2) st.p += readVarint(buf, st);
+  else if (wireType === 5) st.p += 4;
+  else throw new Error("Type protobuf inconnu : " + wireType);
+}
+
+function decodeValue(buf, s, e) {
+  const st = { p: s };
+  let val = null;
+  while (st.p < e) {
+    const key = readVarint(buf, st);
+    const f = key >> 3;
+    const wt = key & 7;
+    if (f === 1 && wt === 2) {
+      const len = readVarint(buf, st);
+      val = _utf8.decode(buf.subarray(st.p, st.p + len));
+      st.p += len;
+    } else if (f === 2 && wt === 5) {
+      val = new DataView(buf.buffer, buf.byteOffset + st.p, 4).getFloat32(0, true);
+      st.p += 4;
+    } else if (f === 3 && wt === 1) {
+      val = new DataView(buf.buffer, buf.byteOffset + st.p, 8).getFloat64(0, true);
+      st.p += 8;
+    } else if (f === 4 || f === 5) {
+      val = readVarint(buf, st);
+    } else if (f === 6) {
+      const v = readVarint(buf, st);
+      val = v % 2 === 0 ? v / 2 : -(v + 1) / 2;
+    } else if (f === 7) {
+      val = readVarint(buf, st) !== 0;
+    } else {
+      skipField(buf, st, wt);
+    }
+  }
+  return val;
+}
+
+function decodeFeature(buf, s, e, keys, values) {
+  const st = { p: s };
+  const tags = [];
+  const geom = [];
+  let type = 0;
+  while (st.p < e) {
+    const key = readVarint(buf, st);
+    const f = key >> 3;
+    const wt = key & 7;
+    if (f === 2 && wt === 2) {
+      const len = readVarint(buf, st);
+      const end2 = st.p + len;
+      while (st.p < end2) tags.push(readVarint(buf, st));
+    } else if (f === 3 && wt === 0) {
+      type = readVarint(buf, st);
+    } else if (f === 4 && wt === 2) {
+      const len = readVarint(buf, st);
+      const end2 = st.p + len;
+      while (st.p < end2) geom.push(readVarint(buf, st));
+    } else {
+      skipField(buf, st, wt);
+    }
+  }
+  const props = {};
+  for (let i = 0; i + 1 < tags.length; i += 2) props[keys[tags[i]]] = values[tags[i + 1]];
+  return { type, props, lines: decodeGeometry(geom) };
+}
+
+function decodeGeometry(g) {
+  const lines = [];
+  let cur = null;
+  let x = 0;
+  let y = 0;
+  let i = 0;
+  while (i < g.length) {
+    const ci = g[i++];
+    const cmd = ci & 7;
+    const cnt = Math.floor(ci / 8);
+    if (cmd === 1 || cmd === 2) {
+      for (let k = 0; k < cnt; k++) {
+        const dx = g[i++];
+        const dy = g[i++];
+        x += (dx >>> 1) ^ -(dx & 1);
+        y += (dy >>> 1) ^ -(dy & 1);
+        if (cmd === 1) { cur = []; lines.push(cur); }
+        if (cur) cur.push([x, y]);
+      }
+    }
+  }
+  return lines;
+}
+
+function decodeLayer(buf, s, e, wanted) {
+  const st = { p: s };
+  let name = "";
+  let extent = 4096;
+  const keys = [];
+  const values = [];
+  const featRanges = [];
+  while (st.p < e) {
+    const key = readVarint(buf, st);
+    const f = key >> 3;
+    const wt = key & 7;
+    if (wt === 2) {
+      const len = readVarint(buf, st);
+      const a = st.p;
+      if (f === 1) name = _utf8.decode(buf.subarray(a, a + len));
+      else if (f === 2) featRanges.push([a, a + len]);
+      else if (f === 3) keys.push(_utf8.decode(buf.subarray(a, a + len)));
+      else if (f === 4) values.push(decodeValue(buf, a, a + len));
+      st.p = a + len;
+    } else if (f === 5 && wt === 0) {
+      extent = readVarint(buf, st);
+    } else {
+      skipField(buf, st, wt);
+    }
+  }
+  if (!wanted.has(name)) return null;
+  return { name, extent, features: featRanges.map(([a, b]) => decodeFeature(buf, a, b, keys, values)) };
+}
+
+function decodeTile(buf, wanted) {
+  const st = { p: 0 };
+  const layers = {};
+  while (st.p < buf.length) {
+    const key = readVarint(buf, st);
+    const f = key >> 3;
+    const wt = key & 7;
+    if (f === 3 && wt === 2) {
+      const len = readVarint(buf, st);
+      const layer = decodeLayer(buf, st.p, st.p + len, wanted);
+      if (layer) layers[layer.name] = layer;
+      st.p += len;
+    } else {
+      skipField(buf, st, wt);
+    }
+  }
+  return layers;
+}
+
+/* ==========================================================================
+   TUILES : planification, téléchargement, cache
+   ========================================================================== */
+const _tileCache = new Map();
+const _tileCacheMax = 500;
+let _tileTemplatePromise = null;
+
+function lngLatToTile(lng, lat, z) {
+  const n = 2 ** z;
+  const la = (Math.max(-85.0511, Math.min(85.0511, lat)) * Math.PI) / 180;
+  const x = Math.floor(((lng + 180) / 360) * n);
+  const y = Math.floor(((1 - Math.log(Math.tan(la) + 1 / Math.cos(la)) / Math.PI) / 2) * n);
+  return [Math.min(n - 1, Math.max(0, x)), Math.min(n - 1, Math.max(0, y))];
+}
+
+function tileToLngLat(tx, ty, z, px, py, extent) {
+  const n = 2 ** z;
+  const x = (tx + px / extent) / n;
+  const y = (ty + py / extent) / n;
+  return [x * 360 - 180, (Math.atan(Math.sinh(Math.PI * (1 - 2 * y))) * 180) / Math.PI];
+}
+
+function tileWidthMeters(z, lat) {
+  return (40075016 * Math.cos((lat * Math.PI) / 180)) / 2 ** z;
+}
+
+/** Tuiles couvrant un corridor autour de la polyligne départ → étapes → arrivée. */
+function planTiles(points, z, ring) {
+  const n = 2 ** z;
+  const set = new Map();
+  for (let i = 0; i < points.length - 1; i++) {
+    const a = points[i];
+    const b = points[i + 1];
+    const len = haversineMeters([a.lng, a.lat], [b.lng, b.lat]);
+    const step = tileWidthMeters(z, a.lat) * 0.5;
+    const steps = Math.max(1, Math.ceil(len / step));
+    for (let k = 0; k <= steps; k++) {
+      const lng = a.lng + ((b.lng - a.lng) * k) / steps;
+      const lat = a.lat + ((b.lat - a.lat) * k) / steps;
+      const [tx, ty] = lngLatToTile(lng, lat, z);
+      for (let dx = -ring; dx <= ring; dx++) {
+        for (let dy = -ring; dy <= ring; dy++) {
+          const x = tx + dx;
+          const y = ty + dy;
+          if (x < 0 || y < 0 || x >= n || y >= n) continue;
+          set.set(`${x}/${y}`, [x, y]);
+        }
+      }
+    }
+  }
+  return [...set.values()];
+}
+
+function chooseZoom(points, ring, zoomCap) {
+  let plan = null;
+  for (let z = zoomCap; z >= ROUTER_CONFIG.minZoom; z--) {
+    plan = { z, tiles: planTiles(points, z, ring) };
+    if (plan.tiles.length <= ROUTER_CONFIG.maxTiles) break;
+  }
+  return plan;
+}
+
+async function getTileTemplate() {
+  if (!_tileTemplatePromise) {
+    _tileTemplatePromise = fetch(ROUTER_CONFIG.tileJsonUrl)
+      .then((r) => {
+        if (!r.ok) throw new Error("TileJSON indisponible (" + r.status + ")");
+        return r.json();
+      })
+      .then((j) => {
+        if (!j.tiles || !j.tiles[0]) throw new Error("TileJSON invalide");
+        return j.tiles[0];
+      })
+      .catch((err) => {
+        _tileTemplatePromise = null;
+        throw err;
+      });
+  }
+  return _tileTemplatePromise;
+}
+
+async function fetchTile(z, x, y) {
+  const key = `${z}/${x}/${y}`;
+  if (_tileCache.has(key)) {
+    const cached = _tileCache.get(key);
+    _tileCache.delete(key);
+    _tileCache.set(key, cached);
+    return cached;
+  }
+
+  const p = (async () => {
+    const tpl = await getTileTemplate();
+    const url = tpl.replace("{z}", z).replace("{x}", x).replace("{y}", y);
+    const res = await fetch(url);
+    if (res.status === 404 || res.status === 204) return null;
+    if (!res.ok) throw new Error(`Tuile ${key} : HTTP ${res.status}`);
+    let bytes = new Uint8Array(await res.arrayBuffer());
+    if (bytes.length > 2 && bytes[0] === 0x1f && bytes[1] === 0x8b) {
+      const ds = new Response(new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip")));
+      bytes = new Uint8Array(await ds.arrayBuffer());
+    }
+    if (!bytes.length) return null;
+    return decodeTile(bytes, new Set(["transportation", "transportation_name"]));
+  })();
+
+  if (_tileCache.size >= _tileCacheMax) {
+    const oldest = _tileCache.keys().next().value;
+    _tileCache.delete(oldest);
+  }
+  _tileCache.set(key, p);
+  p.catch(() => _tileCache.delete(key));
+  return p;
+}
+
+async function loadTiles(plan, onTile) {
+  const results = [];
+  let next = 0;
+  let done = 0;
+  const worker = async () => {
+    while (next < plan.tiles.length) {
+      const idx = next++;
+      const [x, y] = plan.tiles[idx];
+      const decoded = await fetchTile(plan.z, x, y);
+      results[idx] = { x, y, decoded };
+      done++;
+      onTile?.(done, plan.tiles.length);
+    }
+  };
+  await Promise.all(Array.from({ length: ROUTER_CONFIG.concurrency }, worker));
+  return results;
+}
+
+/* ==========================================================================
+   CONSTRUCTION DU GRAPHE (segments soudés entre tuiles)
+   ========================================================================== */
+class GraphBuilder {
+  constructor() {
+    this.lng = [];
+    this.lat = [];
+    this.keyMap = new Map();
+    this.boundaryGrid = new Map();
+    this.segs = [];
+    this.segKeys = new Set();
+  }
+
+  _newNode(lng, lat) {
+    this.lng.push(lng);
+    this.lat.push(lat);
+    return this.lng.length - 1;
+  }
+
+  /** Nœud exact (sommet intérieur d'une tuile). */
+  node(lng, lat) {
+    const key = lng.toFixed(6) + "," + lat.toFixed(6);
+    let id = this.keyMap.get(key);
+    if (id === undefined) {
+      id = this._newNode(lng, lat);
+      this.keyMap.set(key, id);
+    }
+    return id;
+  }
+
+  /** Nœud situé sur une bordure de tuile : fusionné avec ceux des tuiles voisines. */
+  boundaryNode(lng, lat, tolMeters) {
+    const cell = Math.max(tolMeters / 111320, 1e-6);
+    const cx = Math.floor(lng / cell);
+    const cy = Math.floor(lat / cell);
+    const cosLat = Math.cos((lat * Math.PI) / 180);
+    let best = -1;
+    let bestD = tolMeters;
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dy = -1; dy <= 1; dy++) {
+        const list = this.boundaryGrid.get(`${cx + dx}:${cy + dy}:${cell}`);
+        if (!list) continue;
+        for (const id of list) {
+          const d = Math.hypot((this.lng[id] - lng) * cosLat * 111320, (this.lat[id] - lat) * 111320);
+          if (d <= bestD) { bestD = d; best = id; }
+        }
+      }
+    }
+    if (best >= 0) return best;
+    const id = this._newNode(lng, lat);
+    const gk = `${cx}:${cy}:${cell}`;
+    let list = this.boundaryGrid.get(gk);
+    if (!list) { list = []; this.boundaryGrid.set(gk, list); }
+    list.push(id);
+    return id;
+  }
+
+  addSeg(a, b, props) {
+    if (a === b) return -1;
+    const k = a < b ? `${a}-${b}` : `${b}-${a}`;
+    if (this.segKeys.has(k)) return -1;
+    this.segKeys.add(k);
+    this.segs.push({ a, b, dead: false, ...props });
+    return this.segs.length - 1;
+  }
+
+  /** Ne garde que la plus grande composante connexe (supprime les îlots isolés). */
+  keepLargestComponent() {
+    const n = this.lng.length;
+    const parent = new Int32Array(n);
+    for (let i = 0; i < n; i++) parent[i] = i;
+    const find = (x) => {
+      while (parent[x] !== x) { parent[x] = parent[parent[x]]; x = parent[x]; }
+      return x;
+    };
+    for (const s of this.segs) {
+      const ra = find(s.a);
+      const rb = find(s.b);
+      if (ra !== rb) parent[ra] = rb;
+    }
+    const count = new Map();
+    for (const s of this.segs) {
+      const r = find(s.a);
+      count.set(r, (count.get(r) || 0) + 1);
+    }
+    let bestRoot = -1;
+    let bestCount = 0;
+    for (const [r, c] of count) if (c > bestCount) { bestCount = c; bestRoot = r; }
+    for (const s of this.segs) if (find(s.a) !== bestRoot) s.dead = true;
   }
 }
 
-/**
- * Feuille de route Turn-by-Turn ultra-précise avec détection des ronds-points, carrefours et sorties
- */
-function buildTurnByTurnInstructions(pathCoordinates, pathEdges, mode = "car") {
-  if (!pathCoordinates || pathCoordinates.length < 2) return [];
-
-  function getRoadLabel(edge) {
-    if (!edge || edge.isConnector) return "";
-    const name = (edge.name || "").trim();
-    const ref = (edge.ref || "").trim();
-    if (name && ref && !name.toLowerCase().includes(ref.toLowerCase())) {
-      return `${name} (${ref})`;
-    }
-    if (name) return name;
-    if (ref) return ref;
-
-    const rc = edge.roadClass || "street";
-    if (rc === "motorway") return "l'autoroute";
-    if (rc === "trunk") return "la voie express";
-    if (rc === "primary" || rc === "secondary") return "la route principale";
-    if (rc === "residential" || rc === "street") return "la rue";
-    if (rc === "cycleway") return "la piste cyclable";
-    return "";
-  }
-
-  // Trouve le premier nom de route significatif de l'itinéraire
-  let initialRoadLabel = "";
-  for (let k = 0; k < Math.min(5, pathEdges.length); k++) {
-    const lbl = getRoadLabel(pathEdges[k]);
-    if (lbl) {
-      initialRoadLabel = lbl;
-      break;
+/** Clipping de segment (Liang-Barsky) sur [0, E]². */
+function clipSegment(p0, p1, E) {
+  let t0 = 0;
+  let t1 = 1;
+  const dx = p1[0] - p0[0];
+  const dy = p1[1] - p0[1];
+  const checks = [
+    [-dx, p0[0]],
+    [dx, E - p0[0]],
+    [-dy, p0[1]],
+    [dy, E - p0[1]],
+  ];
+  for (const [p, q] of checks) {
+    if (p === 0) {
+      if (q < 0) return null;
+    } else {
+      const r = q / p;
+      if (p < 0) { if (r > t1) return null; if (r > t0) t0 = r; }
+      else { if (r < t0) return null; if (r < t1) t1 = r; }
     }
   }
+  return [
+    [p0[0] + t0 * dx, p0[1] + t0 * dy],
+    [p0[0] + t1 * dx, p0[1] + t1 * dy],
+  ];
+}
 
-  const steps = [];
-  let currentStepManeuver = {
-    type: "depart",
-    modifier: "straight",
-    instruction: initialRoadLabel ? `Prenez ${initialRoadLabel}` : "Prenez la route",
-    location: pathCoordinates[0],
+/** Index des noms de rues (couche transportation_name) : cellules de quelques dizaines de mètres. */
+function buildNameIndex(layer, z, tx, ty, cellDeg) {
+  const index = new Map();
+  if (!layer) return index;
+  const stepMeters = (cellDeg * 111320) / 2;
+  const add = (lng, lat, name, ref) => {
+    const key = `${Math.floor(lng / cellDeg)}:${Math.floor(lat / cellDeg)}`;
+    let list = index.get(key);
+    if (!list) { list = []; index.set(key, list); }
+    list.push({ lng, lat, name, ref });
   };
-
-  let accDist = 0;
-  let accDur = 0;
-  let currentRoad = initialRoadLabel;
-  let currentClass = pathEdges[0]?.roadClass || "street";
-  let currentSpeedLimit = pathEdges[0]?.speedLimit || resolveSpeedLimit(currentClass, null, mode);
-
-  let inRoundabout = false;
-  let roundaboutExitsCount = 0;
-
-  for (let i = 0; i < pathCoordinates.length - 1; i++) {
-    const p1 = pathCoordinates[i];
-    const p2 = pathCoordinates[i + 1];
-    const edge = pathEdges[i] || {};
-    const nextEdge = pathEdges[i + 1] || null;
-
-    const segDist = haversineMeters(p1, p2);
-    accDist += segDist;
-    accDur += edge.baseDuration || (segDist / 13.8);
-
-    const edgeRoadLabel = getRoadLabel(edge);
-    if (edgeRoadLabel && !edge.isConnector) {
-      currentRoad = edgeRoadLabel;
-    }
-    if (edge.roadClass) currentClass = edge.roadClass;
-    if (edge.speedLimit) currentSpeedLimit = edge.speedLimit;
-
-    // Détection d'un rond-point
-    const isEdgeRoundabout = Boolean(edge.isRoundabout || edge.roadClass === "roundabout");
-    const isNextRoundabout = Boolean(nextEdge?.isRoundabout || nextEdge?.roadClass === "roundabout");
-
-    if (isEdgeRoundabout) {
-      if (!inRoundabout) {
-        inRoundabout = true;
-        roundaboutExitsCount = 1;
-      } else {
-        roundaboutExitsCount++;
+  for (const f of layer.features) {
+    const name = f.props.name || f.props["name:latin"] || f.props.name_en || "";
+    const ref = f.props.ref || "";
+    if (!name && !ref) continue;
+    for (const line of f.lines) {
+      let prev = null;
+      for (const q of line) {
+        const cur = tileToLngLat(tx, ty, z, q[0], q[1], layer.extent);
+        if (prev) {
+          const len = haversineMeters(prev, cur);
+          const n = Math.max(1, Math.ceil(len / stepMeters));
+          for (let k = 0; k <= n; k++) {
+            add(prev[0] + ((cur[0] - prev[0]) * k) / n, prev[1] + ((cur[1] - prev[1]) * k) / n, name, ref);
+          }
+        }
+        prev = cur;
       }
     }
+  }
+  return index;
+}
 
-    let isManeuver = false;
-    let nextManeuver = null;
-
-    // Cas 1 : Sortie de rond-point
-    if (inRoundabout && !isNextRoundabout) {
-      inRoundabout = false;
-      isManeuver = true;
-      const exitNum = Math.min(4, Math.max(1, roundaboutExitsCount));
-      const exitSuffix = exitNum === 1 ? "1ère" : `${exitNum}e`;
-      const targetLabel = getRoadLabel(nextEdge) || currentRoad;
-      const targetText = targetLabel ? ` sur ${targetLabel}` : "";
-
-      nextManeuver = {
-        type: "roundabout",
-        modifier: `exit-${exitNum}`,
-        exit: exitNum,
-        instruction: `Au rond-point, prenez la ${exitSuffix} sortie${targetText}`,
-        location: p2,
-      };
+function lookupName(index, lng, lat, cellDeg) {
+  const cx = Math.floor(lng / cellDeg);
+  const cy = Math.floor(lat / cellDeg);
+  let best = null;
+  let bestD = Infinity;
+  for (let dx = -1; dx <= 1; dx++) {
+    for (let dy = -1; dy <= 1; dy++) {
+      const list = index.get(`${cx + dx}:${cy + dy}`);
+      if (!list) continue;
+      for (const s of list) {
+        const d = (s.lng - lng) ** 2 + (s.lat - lat) ** 2;
+        if (d < bestD) { bestD = d; best = s; }
+      }
     }
-    // Cas 2 : Virage / Carrefour hors rond-point
-    else if (!inRoundabout && i < pathCoordinates.length - 2) {
-      const p3 = pathCoordinates[i + 2];
-      const b1 = calculateBearing(p1, p2);
-      const b2 = calculateBearing(p2, p3);
-      const angleChange = ((b2 - b1 + 540) % 360) - 180;
+  }
+  return best && bestD <= (cellDeg * 1.5) ** 2 ? best : null;
+}
 
-      const nextRoadLabel = getRoadLabel(nextEdge);
-      const hasRoadChange = Boolean(nextRoadLabel && nextRoadLabel !== currentRoad);
-      const isSharpTurn = Math.abs(angleChange) >= 18;
+function ingestTile(builder, tile, z, mode) {
+  const tr = tile.decoded?.transportation;
+  if (!tr) return;
+  const E = tr.extent || 4096;
+  const [, centerLat] = tileToLngLat(tile.x, tile.y, z, E / 2, E / 2, E);
+  const unitM = tileWidthMeters(z, centerLat) / E;
+  const weldTol = Math.max(3, 2.5 * unitM);
+  const cellDeg = Math.max(0.00015, (3 * unitM) / 111320);
+  const nameIndex = buildNameIndex(tile.decoded.transportation_name, z, tile.x, tile.y, cellDeg);
+  const eps = 1e-6;
+  const onBorder = (q) => q[0] <= eps || q[0] >= E - eps || q[1] <= eps || q[1] >= E - eps;
 
-      if (isSharpTurn || hasRoadChange) {
-        let mod = "straight";
-        if (angleChange > 135 || angleChange < -135) mod = "uturn";
-        else if (angleChange >= 45) mod = "right";
-        else if (angleChange > 16) mod = "slight right";
-        else if (angleChange <= -45) mod = "left";
-        else if (angleChange < -16) mod = "slight left";
+  const vertex = (q) => {
+    const [lng, lat] = tileToLngLat(tile.x, tile.y, z, q[0], q[1], E);
+    return onBorder(q) ? builder.boundaryNode(lng, lat, weldTol) : builder.node(lng, lat);
+  };
 
-        if (mod !== "straight") {
-          isManeuver = true;
-          const targetRoad = nextRoadLabel || currentRoad;
-          const targetText = targetRoad ? ` sur ${targetRoad}` : "";
+  for (const f of tr.features) {
+    if (f.type !== 2) continue;
+    const p = f.props;
+    const cls = resolveClass(p);
+    if (!cls || !isClassAllowed(cls, mode)) continue;
+    if (p.access === "no") continue;
+    // Les voies de service / allées sont autorisées pour permettre le raccordement au réseau routier
 
-          let instr = "";
-          if (mod === "uturn") {
-            instr = "Faites demi-tour dès que possible";
-          } else if (nextEdge?.isRamp) {
-            instr = `Prenez la bretelle d'accès${targetText}`;
-          } else if (edge.roadClass === "motorway" && nextEdge?.roadClass !== "motorway") {
-            instr = `Prenez la sortie${targetText}`;
-          } else if (mod === "right") {
-            instr = `Au carrefour, tournez à droite${targetText}`;
-          } else if (mod === "slight right") {
-            instr = `Serrez à droite${targetText}`;
-          } else if (mod === "left") {
-            instr = `Au carrefour, tournez à gauche${targetText}`;
-          } else if (mod === "slight left") {
-            instr = `Serrez à gauche${targetText}`;
+    const ow = mode === "car" ? Number(p.oneway) || 0 : 0;
+    const ramp = Number(p.ramp) === 1;
+    const isRoundabout = Boolean(p.junction === "roundabout" || p.roundabout === 1 || p.subclass === "roundabout" || p.class === "roundabout");
+
+    for (const line of f.lines) {
+      for (let i = 0; i < line.length - 1; i++) {
+        const clipped = clipSegment(line[i], line[i + 1], E);
+        if (!clipped) continue;
+        let a = vertex(clipped[0]);
+        let b = vertex(clipped[1]);
+        if (a === b) continue;
+
+        const mid = [(builder.lng[a] + builder.lng[b]) / 2, (builder.lat[a] + builder.lat[b]) / 2];
+        const nm = lookupName(nameIndex, mid[0], mid[1], cellDeg);
+
+        let oneway = 0;
+        if (ow === 1) oneway = 1;
+        else if (ow === -1) { oneway = 1; [a, b] = [b, a]; }
+
+        builder.addSeg(a, b, { cls, name: nm?.name || "", ref: nm?.ref || "", ramp, oneway, isRoundabout });
+      }
+    }
+  }
+}
+
+/* --------------------------------------------------------------------------
+   Projection des points sur le segment de route le plus proche
+   -------------------------------------------------------------------------- */
+class SegmentIndex {
+  constructor(builder, cell = 0.004) {
+    this.b = builder;
+    this.cell = cell;
+    this.grid = new Map();
+    for (let i = 0; i < builder.segs.length; i++) if (!builder.segs[i].dead) this.add(i);
+  }
+
+  add(i) {
+    const { b, cell } = this;
+    const s = b.segs[i];
+    const x0 = b.lng[s.a], y0 = b.lat[s.a], x1 = b.lng[s.b], y1 = b.lat[s.b];
+    const steps = Math.max(1, Math.ceil(Math.max(Math.abs(x1 - x0), Math.abs(y1 - y0)) / cell));
+    let last = "";
+    for (let k = 0; k <= steps; k++) {
+      const x = x0 + ((x1 - x0) * k) / steps;
+      const y = y0 + ((y1 - y0) * k) / steps;
+      const key = `${Math.floor(x / cell)}:${Math.floor(y / cell)}`;
+      if (key === last) continue;
+      last = key;
+      let list = this.grid.get(key);
+      if (!list) { list = []; this.grid.set(key, list); }
+      list.push(i);
+    }
+  }
+
+  nearest(lng, lat, maxMeters) {
+    const { b, cell } = this;
+    const cosLat = Math.cos((lat * Math.PI) / 180);
+    const kx = 111320 * cosLat;
+    const ky = 111320;
+    const cellMin = cell * kx;
+    const maxRing = Math.ceil(maxMeters / Math.max(1, cellMin)) + 1;
+    const cx = Math.floor(lng / cell);
+    const cy = Math.floor(lat / cell);
+    let best = null;
+
+    for (let r = 0; r <= maxRing; r++) {
+      for (let dx = -r; dx <= r; dx++) {
+        for (let dy = -r; dy <= r; dy++) {
+          if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
+          const list = this.grid.get(`${cx + dx}:${cy + dy}`);
+          if (!list) continue;
+          for (const i of list) {
+            const s = b.segs[i];
+            if (s.dead) continue;
+            const ax = (b.lng[s.a] - lng) * kx, ay = (b.lat[s.a] - lat) * ky;
+            const bx = (b.lng[s.b] - lng) * kx, by = (b.lat[s.b] - lat) * ky;
+            const vx = bx - ax, vy = by - ay;
+            const len2 = vx * vx + vy * vy;
+            let t = len2 > 0 ? -(ax * vx + ay * vy) / len2 : 0;
+            t = Math.max(0, Math.min(1, t));
+            const d = Math.hypot(ax + t * vx, ay + t * vy);
+            if (!best || d < best.dist) best = { seg: i, t, dist: d };
           }
+        }
+      }
+      if (best && best.dist <= (r - 1) * cellMin) break;
+    }
+    return best && best.dist <= maxMeters ? best : null;
+  }
 
-          nextManeuver = {
-            type: "turn",
-            modifier: mod,
-            instruction: instr,
-            location: p2,
-          };
+  /** Projette le point sur la route : coupe le segment en deux et renvoie l'id du nœud. */
+  snap(lng, lat, maxMeters) {
+    const hit = this.nearest(lng, lat, maxMeters);
+    if (!hit) return null;
+    const { b } = this;
+    const s = b.segs[hit.seg];
+    if (hit.t < 0.02) return { node: s.a, dist: hit.dist };
+    if (hit.t > 0.98) return { node: s.b, dist: hit.dist };
+
+    const plng = b.lng[s.a] + (b.lng[s.b] - b.lng[s.a]) * hit.t;
+    const plat = b.lat[s.a] + (b.lat[s.b] - b.lat[s.a]) * hit.t;
+    const p = b.node(plng, plat);
+
+    s.dead = true;
+    const props = { cls: s.cls, name: s.name, ref: s.ref, ramp: s.ramp, oneway: s.oneway, isRoundabout: s.isRoundabout };
+    b.segKeys.delete(s.a < s.b ? `${s.a}-${s.b}` : `${s.b}-${s.a}`);
+    const i1 = b.addSeg(s.a, p, props);
+    const i2 = b.addSeg(p, s.b, props);
+    if (i1 >= 0) this.add(i1);
+    if (i2 >= 0) this.add(i2);
+    return { node: p, dist: hit.dist };
+  }
+}
+
+/** Graphe orienté final (listes d'arcs sortants / entrants). */
+function buildGraph(builder, mode, criterion) {
+  const n = builder.lng.length;
+  const out = new Array(n);
+  const inn = new Array(n);
+  for (let i = 0; i < n; i++) { out[i] = []; inn[i] = []; }
+  const edges = [];
+  const { lng, lat } = builder;
+
+  for (const s of builder.segs) {
+    if (s.dead) continue;
+    const A = [lng[s.a], lat[s.a]];
+    const B = [lng[s.b], lat[s.b]];
+    const dist = haversineMeters(A, B);
+    if (dist < 0.3) continue;
+    const c = arcCosts(s.cls, dist, mode, criterion, A, s.name, s.ref);
+    const mk = (from, to, P, Q) => {
+      const e = {
+        from, to, w: c.cost, distance: dist, baseDuration: c.duration, speedLimit: c.speed,
+        roadClass: s.cls, name: s.name, ref: s.ref, isRamp: s.ramp, isRoundabout: Boolean(s.isRoundabout),
+        coordinates: [P, Q],
+      };
+      out[from].push(e);
+      inn[to].push(e);
+      edges.push(e);
+    };
+    mk(s.a, s.b, A, B);
+    if (!s.oneway) mk(s.b, s.a, B, A);
+  }
+
+  let live = 0;
+  for (let i = 0; i < n; i++) if (out[i].length || inn[i].length) live++;
+  return { n, live, lng, lat, out, inn, edges };
+}
+
+function degreeOf(graph, node) {
+  const ids = new Set();
+  for (const e of graph.out[node]) ids.add(e.to);
+  for (const e of graph.inn[node]) ids.add(e.from);
+  return ids.size;
+}
+
+/* ==========================================================================
+   A* BIDIRECTIONNEL (potentiels moyens — cohérents, donc exact)
+   ========================================================================== */
+async function bidirectionalAStar(graph, s, t, opts = {}) {
+  const { lb, visualize = false, onProgress = null } = opts;
+  if (s === t) return [];
+  const n = graph.n;
+  const { lng, lat } = graph;
+
+  const dTo = (v, target) => haversineMeters([lng[v], lat[v]], [lng[target], lat[target]]);
+  const pi = (v) => 0.5 * lb * (dTo(v, t) - dTo(v, s));
+
+  const gF = new Float64Array(n).fill(Infinity);
+  const gB = new Float64Array(n).fill(Infinity);
+  const closedF = new Uint8Array(n);
+  const closedB = new Uint8Array(n);
+  const parF = new Array(n);
+  const parB = new Array(n);
+  const hF = new MinPriorityQueue();
+  const hB = new MinPriorityQueue();
+
+  gF[s] = 0; hF.push(s, pi(s));
+  gB[t] = 0; hB.push(t, -pi(t));
+
+  let mu = Infinity;
+  let meet = -1;
+  let steps = 0;
+  const startTime = performance.now();
+  let lastYield = startTime;
+  const explored = [];
+
+  while (!hF.isEmpty() && !hB.isEmpty()) {
+    if (hF.peekPriority() + hB.peekPriority() >= mu) break;
+    steps++;
+    const forward = hF.peekPriority() <= hB.peekPriority();
+
+    if (forward) {
+      const { item: v } = hF.popEntry();
+      if (closedF[v]) continue;
+      closedF[v] = 1;
+      for (const e of graph.out[v]) {
+        const u = e.to;
+        const ng = gF[v] + e.w;
+        if (ng < gF[u]) {
+          gF[u] = ng;
+          parF[u] = e;
+          hF.push(u, ng + pi(u));
+          if (visualize) explored.push(e.coordinates);
+          if (gB[u] < Infinity && ng + gB[u] < mu) { mu = ng + gB[u]; meet = u; }
+        }
+      }
+    } else {
+      const { item: v } = hB.popEntry();
+      if (closedB[v]) continue;
+      closedB[v] = 1;
+      for (const e of graph.inn[v]) {
+        const u = e.from;
+        const ng = gB[v] + e.w;
+        if (ng < gB[u]) {
+          gB[u] = ng;
+          parB[u] = e;
+          hB.push(u, ng - pi(u));
+          if (visualize) explored.push(e.coordinates);
+          if (gF[u] < Infinity && ng + gF[u] < mu) { mu = ng + gF[u]; meet = u; }
         }
       }
     }
 
-    // Dès qu'une manœuvre est rencontrée, archiver le segment actuel et démarrer le suivant
-    if (isManeuver && nextManeuver) {
-      steps.push({
-        name: currentRoad || "Route",
-        ref: edge.ref || "",
-        roadClass: currentClass,
-        maxspeed: currentSpeedLimit,
-        distance: Math.max(1, Math.round(accDist)),
-        duration: Math.max(1, Math.round(accDur)),
-        location: currentStepManeuver.location,
-        maneuver: currentStepManeuver,
+    if (visualize && !window.__algoSkipRequested && (steps % 60 === 0 || performance.now() - lastYield > 16)) {
+      lastYield = performance.now();
+      onProgress?.({
+        stepsCount: steps,
+        elapsedMs: Math.round(lastYield - startTime),
+        frontierSize: hF.size() + hB.size(),
+        exploredCount: steps,
+        algoName: "A* bidirectionnel",
+        exploredEdges: explored.slice(-250),
+        frontierNodes: [],
       });
-
-      accDist = 0;
-      accDur = 0;
-      currentStepManeuver = nextManeuver;
-      if (getRoadLabel(nextEdge)) {
-        currentRoad = getRoadLabel(nextEdge);
-      }
+      await new Promise((r) => setTimeout(r, 0));
     }
   }
 
-  // Dernière portion jusqu'à l'arrivée
-  steps.push({
-    name: currentRoad || "Destination",
-    ref: pathEdges[pathEdges.length - 1]?.ref || "",
-    roadClass: currentClass,
-    maxspeed: currentSpeedLimit,
-    distance: Math.max(1, Math.round(accDist)),
-    duration: Math.max(1, Math.round(accDur)),
-    location: currentStepManeuver.location,
-    maneuver: currentStepManeuver,
-  });
+  if (meet < 0) return null;
 
-  // Étape terminale d'arrivée
+  const edges = [];
+  let cur = meet;
+  while (cur !== s) { const e = parF[cur]; edges.unshift(e); cur = e.from; }
+  cur = meet;
+  while (cur !== t) { const e = parB[cur]; edges.push(e); cur = e.to; }
+  return edges;
+}
+
+/* ==========================================================================
+   CONTRACTION HIERARCHIES
+   ========================================================================== */
+class ContractionHierarchy {
+  /**
+   * Prétraitement : contracte les nœuds par ordre d'importance (différence
+   * d'arêtes + voisins supprimés, mise à jour paresseuse) avec recherche de
+   * témoins bornée. Renvoie null si le budget de temps est dépassé.
+   */
+  static async build(graph, onProgress) {
+    const N = graph.n;
+    const t0 = performance.now();
+    const budget = ROUTER_CONFIG.chTimeBudgetMs;
+
+    const outM = new Array(N);
+    const inM = new Array(N);
+    for (let i = 0; i < N; i++) { outM[i] = new Map(); inM[i] = new Map(); }
+    for (const e of graph.edges) {
+      const ex = outM[e.from].get(e.to);
+      if (!ex || e.w < ex.w) {
+        const a = { from: e.from, to: e.to, w: e.w, edge: e, c1: null, c2: null };
+        outM[e.from].set(e.to, a);
+        inM[e.to].set(e.from, a);
+      }
+    }
+
+    const contracted = new Uint8Array(N);
+    const deleted = new Int32Array(N);
+    const dist = new Float64Array(N).fill(Infinity);
+    const upOut = new Array(N);
+    const upIn = new Array(N);
+
+    const witness = (src, skip, bound, maxSettled) => {
+      const touched = [src];
+      dist[src] = 0;
+      const pq = new MinPriorityQueue();
+      pq.push(src, 0);
+      let settled = 0;
+      while (!pq.isEmpty()) {
+        const { item: x, priority: d } = pq.popEntry();
+        if (d > dist[x]) continue;
+        if (d > bound || ++settled > maxSettled) break;
+        for (const a of outM[x].values()) {
+          const y = a.to;
+          if (y === skip) continue;
+          const nd = d + a.w;
+          if (nd < dist[y]) {
+            if (dist[y] === Infinity) touched.push(y);
+            dist[y] = nd;
+            pq.push(y, nd);
+          }
+        }
+      }
+      return touched;
+    };
+
+    // Liste des raccourcis nécessaires si on contractait v (sans rien modifier).
+    const shortcutsFor = (v) => {
+      const list = [];
+      const ins = [...inM[v].values()];
+      const outs = [...outM[v].values()];
+      for (const ain of ins) {
+        const u = ain.from;
+        let maxW = 0;
+        for (const aout of outs) if (aout.to !== u) maxW = Math.max(maxW, ain.w + aout.w);
+        if (maxW === 0) continue;
+        const touched = witness(u, v, maxW, 60);
+        for (const aout of outs) {
+          const w = aout.to;
+          if (w === u) continue;
+          const sw = ain.w + aout.w;
+          if (dist[w] <= sw) continue;
+          list.push({ u, w, sw, ain, aout });
+        }
+        for (const x of touched) dist[x] = Infinity;
+      }
+      return { list, ins: ins.length, outs: outs.length };
+    };
+
+    const priorityOf = (v) => {
+      const r = shortcutsFor(v);
+      return (r.list.length - r.ins - r.outs) * 2 + deleted[v];
+    };
+
+    const heap = new MinPriorityQueue();
+    for (let v = 0; v < N; v++) {
+      heap.push(v, priorityOf(v));
+      if (v % 4000 === 3999) {
+        if (performance.now() - t0 > budget) return null;
+        onProgress?.({ phase: "ch", pct: Math.round((v / N) * 20), algoName: "Contraction Hierarchies (ordre)" });
+        await new Promise((r) => setTimeout(r, 0));
+      }
+    }
+
+    const rank = new Int32Array(N);
+    let order = 0;
+    let sinceYield = 0;
+
+    while (!heap.isEmpty()) {
+      const { item: v } = heap.popEntry();
+      if (contracted[v]) continue;
+
+      const r = shortcutsFor(v);
+      const np = (r.list.length - r.ins - r.outs) * 2 + deleted[v];
+      const top = heap.peekPriority();
+      if (top !== null && np > top) { heap.push(v, np); continue; }
+
+      for (const sc of r.list) {
+        const ex = outM[sc.u].get(sc.w);
+        if (!ex || sc.sw < ex.w) {
+          const a = { from: sc.u, to: sc.w, w: sc.sw, edge: null, c1: sc.ain, c2: sc.aout };
+          outM[sc.u].set(sc.w, a);
+          inM[sc.w].set(sc.u, a);
+        }
+      }
+
+      upOut[v] = [...outM[v].values()];
+      upIn[v] = [...inM[v].values()];
+      for (const a of upOut[v]) { inM[a.to].delete(v); deleted[a.to]++; }
+      for (const a of upIn[v]) { outM[a.from].delete(v); deleted[a.from]++; }
+      contracted[v] = 1;
+      rank[v] = order++;
+
+      if (++sinceYield >= 1500) {
+        sinceYield = 0;
+        if (performance.now() - t0 > budget) return null;
+        onProgress?.({ phase: "ch", pct: 20 + Math.round((order / N) * 80), algoName: "Contraction Hierarchies (contraction)" });
+        await new Promise((r2) => setTimeout(r2, 0));
+      }
+    }
+
+    return new ContractionHierarchy(N, upOut, upIn);
+  }
+
+  constructor(N, upOut, upIn) {
+    this.N = N;
+    this.upOut = upOut; // arcs v -> w avec rank[w] > rank[v]
+    this.upIn = upIn;   // arcs u -> v avec rank[u] > rank[v] (recherche arrière)
+  }
+
+  /** Dijkstra bidirectionnel sur les graphes montants + dépliage des raccourcis. */
+  query(s, t) {
+    if (s === t) return [];
+    const dF = new Map([[s, 0]]);
+    const dB = new Map([[t, 0]]);
+    const pF = new Map();
+    const pB = new Map();
+    const hF = new MinPriorityQueue();
+    const hB = new MinPriorityQueue();
+    hF.push(s, 0);
+    hB.push(t, 0);
+    let best = Infinity;
+    let meet = -1;
+
+    const step = (heap, dMine, dOther, par, arcsOf, nextOf) => {
+      if (heap.isEmpty()) return;
+      const { item: v, priority: d } = heap.popEntry();
+      if (d > dMine.get(v)) return;
+      if (d >= best) { heap.clear(); return; }
+      const ob = dOther.get(v);
+      if (ob !== undefined && d + ob < best) { best = d + ob; meet = v; }
+      for (const a of arcsOf[v] || []) {
+        const u = nextOf(a);
+        const nd = d + a.w;
+        if (nd < (dMine.get(u) ?? Infinity)) {
+          dMine.set(u, nd);
+          par.set(u, a);
+          heap.push(u, nd);
+          const o = dOther.get(u);
+          if (o !== undefined && nd + o < best) { best = nd + o; meet = u; }
+        }
+      }
+    };
+
+    while (!hF.isEmpty() || !hB.isEmpty()) {
+      step(hF, dF, dB, pF, this.upOut, (a) => a.to);
+      step(hB, dB, dF, pB, this.upIn, (a) => a.from);
+    }
+    if (meet < 0) return null;
+
+    const arcsF = [];
+    let cur = meet;
+    while (cur !== s) { const a = pF.get(cur); arcsF.unshift(a); cur = a.from; }
+    const arcsB = [];
+    cur = meet;
+    while (cur !== t) { const a = pB.get(cur); arcsB.push(a); cur = a.to; }
+
+    const edges = [];
+    for (const top of [...arcsF, ...arcsB]) {
+      const stack = [top];
+      while (stack.length) {
+        const a = stack.pop();
+        if (a.c1) { stack.push(a.c2); stack.push(a.c1); }
+        else edges.push(a.edge);
+      }
+    }
+    return edges;
+  }
+}
+
+/* ==========================================================================
+   FEUILLE DE ROUTE (turn-by-turn)
+   ========================================================================== */
+function roadLabel(edge) {
+  if (!edge) return "";
+  const name = (edge.name || "").trim();
+  const ref = (edge.ref || "").trim();
+  if (name && ref && !name.toLowerCase().includes(ref.toLowerCase())) return `${name} (${ref})`;
+  if (name) return name;
+  if (ref) return ref;
+  switch (edge.roadClass) {
+    case "motorway": return "l'autoroute";
+    case "trunk": return "la voie express";
+    case "primary":
+    case "secondary":
+    case "tertiary": return "la route";
+    case "cycleway": return "la piste cyclable";
+    case "path":
+    case "footway":
+    case "pedestrian": return "le chemin";
+    default: return "";
+  }
+}
+
+function buildTurnByTurnInstructions(graph, edges, coords, mode = "car") {
+  if (!edges.length) return [];
+  const isFast = (e) => e && (e.roadClass === "motorway" || e.roadClass === "trunk");
+
+  // Calcule l'angle exact à la bifurcation entre l'arrivée (cur) et le départ (nxt)
+  // Utilise les 8 à 12 mètres immédiats pour éliminer définitivement toute inversion gauche/droite
+  const turnAngleAt = (i) => {
+    const p = coords[i + 1];
+    let jIn = i;
+    while (jIn > 0 && haversineMeters(coords[jIn], p) < 8) jIn--;
+    const bIn = calculateBearing(coords[jIn], p);
+
+    let jOut = i + 2;
+    while (jOut < coords.length - 1 && haversineMeters(p, coords[jOut]) < 8) jOut++;
+    const bOut = calculateBearing(p, coords[jOut]);
+
+    // > 0 = Droite (sens horaire), < 0 = Gauche (sens trigonométrique)
+    let diff = ((bOut - bIn + 540) % 360) - 180;
+    return { angle: diff, absA: Math.abs(diff), bIn, bOut };
+  };
+
+  let initialLabel = "";
+  for (let k = 0; k < Math.min(8, edges.length); k++) {
+    initialLabel = roadLabel(edges[k]);
+    if (initialLabel) break;
+  }
+
+  const verb = mode === "car" ? "Prenez" : "Suivez";
+  const steps = [];
+  let maneuver = {
+    type: "depart",
+    modifier: "straight",
+    instruction: initialLabel ? `${verb} ${initialLabel}` : `${verb} la route`,
+    location: coords[0],
+  };
+  let currentRoad = initialLabel;
+  let accDist = 0;
+  let accDur = 0;
+  let lastClass = edges[0].roadClass;
+  let lastSpeed = edges[0].speedLimit;
+
+  const flush = () => {
+    if (accDist < 1 && steps.length > 0) return;
+    steps.push({
+      name: currentRoad || "Route",
+      ref: "",
+      roadClass: lastClass,
+      maxspeed: lastSpeed,
+      distance: Math.max(1, Math.round(accDist)),
+      duration: Math.max(1, Math.round(accDur)),
+      location: maneuver.location,
+      maneuver,
+    });
+    accDist = 0;
+    accDur = 0;
+  };
+
+  for (let i = 0; i < edges.length; i++) {
+    const cur = edges[i];
+    accDist += cur.distance;
+    accDur += cur.baseDuration;
+    lastClass = cur.roadClass;
+    lastSpeed = cur.speedLimit;
+
+    if (i === edges.length - 1) break;
+    const nxt = edges[i + 1];
+    const node = cur.to;
+    const deg = degreeOf(graph, node);
+
+    // 1. Détection des ronds-points : fusionne le giratoire en une seule manœuvre standardisée
+    if (nxt.isRoundabout && !cur.isRoundabout) {
+      let exitCount = 1;
+      let rIdx = i + 1;
+      let totalRDist = 0;
+      let totalRDur = 0;
+      let exitRoadLabel = "";
+
+      while (rIdx < edges.length && edges[rIdx].isRoundabout) {
+        totalRDist += edges[rIdx].distance;
+        totalRDur += edges[rIdx].baseDuration;
+        const rNode = edges[rIdx].to;
+        // Si le nœud permet de quitter le rond-point vers une autre voie
+        if (degreeOf(graph, rNode) >= 3 && rIdx < edges.length - 1 && edges[rIdx + 1].isRoundabout) {
+          exitCount++;
+        }
+        rIdx++;
+      }
+
+      if (rIdx < edges.length) {
+        exitRoadLabel = roadLabel(edges[rIdx]);
+      }
+
+      flush();
+      const exitSuffix = exitCount === 1 ? "première" : exitCount === 2 ? "deuxième" : exitCount === 3 ? "troisième" : `${exitCount}e`;
+      const targetText = exitRoadLabel ? ` sur ${exitRoadLabel}` : "";
+      maneuver = {
+        type: "roundabout",
+        modifier: `roundabout-exit-${exitCount}`,
+        instruction: `Au rond-point, prenez la ${exitSuffix} sortie${targetText}`,
+        location: coords[i + 1],
+      };
+      if (exitRoadLabel) currentRoad = exitRoadLabel;
+
+      accDist = totalRDist;
+      accDur = totalRDur;
+      i = rIdx - 1;
+      continue;
+    }
+
+    // 2. Calcul d'angle précis à la jonction
+    const { angle, absA } = turnAngleAt(i);
+    const nextLabel = roadLabel(nxt);
+    const nameChanged = Boolean(nextLabel && currentRoad && nextLabel !== currentRoad);
+    const rampEnter = Boolean(nxt.isRamp && !cur.isRamp);
+    const exitFast = isFast(cur) && !isFast(nxt);
+
+    // Même axe / même route (ex: continue sur D 906 ou A 1)
+    const sameNamedRoad = Boolean(
+      (cur.name && nxt.name && cur.name === nxt.name) ||
+      (cur.ref && nxt.ref && cur.ref === nxt.ref)
+    );
+
+    // RÈGLE ANTI-ZIGZAG :
+    // - Si deg <= 2 : il n'y a pas d'intersection, la route serpente simplement. On NE GÉNÈRE AUCUN VIRAGE !
+    // - Si deg >= 3 mais qu'on reste sur le même axe nommé : pas de virage sauf si carrefour en T (> 65°)
+    let isRealTurn = false;
+    if (rampEnter || exitFast) {
+      isRealTurn = true;
+    } else if (deg >= 3) {
+      if (sameNamedRoad) {
+        if (absA >= 65) isRealTurn = true;
+      } else if (nameChanged) {
+        if (absA >= 22) isRealTurn = true;
+      } else {
+        // Carrefour sans toponyme : virage net requis (>= 38°)
+        if (absA >= 38) isRealTurn = true;
+      }
+    }
+
+    // Si on continue sur le grand axe, accumuler la distance sans spammer
+    if (!isRealTurn || accDist < 35) {
+      if (nextLabel && (deg < 3 || !currentRoad)) currentRoad = nextLabel;
+      continue;
+    }
+
+    let mod = "straight";
+    if (absA > 145) mod = "uturn";
+    else if (angle >= 45) mod = "right";
+    else if (angle > 18) mod = "slight right";
+    else if (angle <= -45) mod = "left";
+    else if (angle < -18) mod = "slight left";
+
+    const target = nextLabel || currentRoad;
+    const onto = target ? ` sur ${target}` : "";
+    let instr;
+    let type = "turn";
+
+    if (mod === "uturn") instr = "Faites demi-tour dès que possible";
+    else if (rampEnter) instr = `Prenez la bretelle${onto}`;
+    else if (exitFast) instr = `Prenez la sortie${onto}`;
+    else if (mod === "right") instr = `Tournez à droite${onto}`;
+    else if (mod === "slight right") instr = `Serrez à droite${onto}`;
+    else if (mod === "left") instr = `Tournez à gauche${onto}`;
+    else if (mod === "slight left") instr = `Serrez à gauche${onto}`;
+    else { instr = `Continuez${onto}`; type = "continue"; }
+
+    flush();
+    maneuver = { type, modifier: mod, instruction: instr, location: coords[i + 1] };
+    if (nextLabel) currentRoad = nextLabel;
+  }
+
+  flush();
   steps.push({
     name: "Destination",
     ref: "",
@@ -648,523 +1476,673 @@ function buildTurnByTurnInstructions(pathCoordinates, pathEdges, mode = "car") {
     maxspeed: 30,
     distance: 0,
     duration: 0,
-    location: pathCoordinates[pathCoordinates.length - 1],
+    location: coords[coords.length - 1],
     maneuver: {
       type: "arrive",
       modifier: "straight",
       instruction: "Vous êtes arrivé à destination",
-      location: pathCoordinates[pathCoordinates.length - 1],
+      location: coords[coords.length - 1],
     },
   });
-
   return steps;
 }
 
-function reconstructResult(cameFrom, graph, startNode, goalNode, mode) {
-  const coordinates = [];
-  const edges = [];
-  let curr = goalNode.id;
+/* ==========================================================================
+   CALCUL D'ITINÉRAIRE
+   ========================================================================== */
+function emitProgress(onProgress, algoName, extra = {}) {
+  onProgress?.({
+    stepsCount: 0, elapsedMs: 0, frontierSize: 0, exploredCount: 0,
+    exploredEdges: [], frontierNodes: [], algoName, ...extra,
+  });
+}
 
-  while (curr && cameFrom.has(curr)) {
-    const { parentId, edge } = cameFrom.get(curr);
-    if (edge && edge.coordinates) {
-      coordinates.unshift(edge.coordinates[1]);
-      edges.unshift(edge);
+async function routeOnce(points, plan, opts) {
+  const { mode, criterion, visualize, onProgress, useContraction } = opts;
+  const t0 = performance.now();
+
+  // 1. Tuiles
+  const tiles = await loadTiles(plan, (done, total) =>
+    emitProgress(onProgress, `Chargement des tuiles ${done}/${total}`, { phase: "tiles", elapsedMs: Math.round(performance.now() - t0) })
+  );
+
+  // 2. Graphe
+  emitProgress(onProgress, "Construction du graphe routier", { phase: "graph" });
+  const builder = new GraphBuilder();
+  for (const tile of tiles) ingestTile(builder, tile, plan.z, mode);
+  if (!builder.segs.length) return { error: "Aucune route chargée dans cette zone" };
+  // 3. Projection des points sur la route (sur l'ensemble des axes chargés)
+  const index = new SegmentIndex(builder);
+  const maxSnap = Math.max(ROUTER_CONFIG.maxSnapMeters, tileWidthMeters(plan.z, points[0].lat) * 0.4, 5000);
+  const snapped = [];
+  for (let i = 0; i < points.length; i++) {
+    const sn = index.snap(points[i].lng, points[i].lat, maxSnap);
+    if (!sn) return { error: "Aucune route à proximité d'un des points" };
+    snapped.push(sn);
+  }
+
+  // Élagage intelligent : conserve la composante contenant le départ et l'arrivée
+  const nNodes = builder.lng.length;
+  const parent = new Int32Array(nNodes);
+  for (let i = 0; i < nNodes; i++) parent[i] = i;
+  const findRoot = (x) => {
+    while (parent[x] !== x) { parent[x] = parent[parent[x]]; x = parent[x]; }
+    return x;
+  };
+  for (const s of builder.segs) {
+    if (s.dead) continue;
+    const ra = findRoot(s.a), rb = findRoot(s.b);
+    if (ra !== rb) parent[ra] = rb;
+  }
+  for (let i = 0; i < snapped.length - 1; i++) {
+    const u = snapped[i].node, v = snapped[i + 1].node;
+    if (findRoot(u) !== findRoot(v)) {
+      return { error: "Points dans des zones routières déconnectées" };
     }
-    curr = parentId;
   }
-  coordinates.unshift([startNode.lng, startNode.lat]);
-
-  let totalDist = 0;
-  let totalDur = 0;
-  for (const e of edges) {
-    totalDist += e.distance;
-    totalDur += e.baseDuration;
+  const rootTarget = findRoot(snapped[0].node);
+  for (const s of builder.segs) {
+    if (findRoot(s.a) !== rootTarget) s.dead = true;
   }
 
-  const steps = buildTurnByTurnInstructions(coordinates, edges, mode);
+  const graph = buildGraph(builder, mode, criterion);
+  const lb = lowerBoundPerMeter(mode, criterion);
+
+  // 4. Contraction Hierarchies si le graphe est assez petit
+  let ch = null;
+  let usedCH = false;
+  if (useContraction && graph.live <= ROUTER_CONFIG.chMaxNodes) {
+    ch = await ContractionHierarchy.build(graph, (p) => emitProgress(onProgress, `${p.algoName} ${p.pct}%`, { phase: "ch" }));
+  }
+
+  // 5. Recherche, tronçon par tronçon
+  const legs = [];
+  for (let i = 0; i < snapped.length - 1; i++) {
+    const s = snapped[i].node;
+    const t = snapped[i + 1].node;
+    let edges = null;
+
+    if (ch) {
+      edges = ch.query(s, t);
+      if (edges) usedCH = true;
+    }
+    if (!edges) {
+      edges = await bidirectionalAStar(graph, s, t, { lb, visualize, onProgress });
+    }
+    if (!edges) return { error: "Aucun chemin entre deux points (zone chargée insuffisante)" };
+
+    const coords = [[graph.lng[s], graph.lat[s]]];
+    let distance = 0;
+    let duration = 0;
+    for (const e of edges) {
+      coords.push(e.coordinates[1]);
+      distance += e.distance;
+      duration += e.baseDuration;
+    }
+    const steps = buildTurnByTurnInstructions(graph, edges, coords, mode);
+    if (i < snapped.length - 2 && steps.length) {
+      const last = steps[steps.length - 1];
+      last.name = "Étape";
+      last.maneuver.instruction = "Étape atteinte";
+    }
+    legs.push({ coords, distance, duration, steps });
+  }
+
+  return { legs, graph, usedCH, snapped, zoom: plan.z, tileCount: plan.tiles.length };
+}
+
+/* ==========================================================================
+   MOTEUR ROUTIER OSRM (Réseau global, autoroutes, inter-pays & repli haute fiabilité)
+   ========================================================================== */
+
+function formatOsrmStep(s) {
+  const m = s.maneuver || {};
+  const t = m.type || "";
+  const mod = m.modifier || "";
+  const roadName = [s.ref, s.name].filter(Boolean).join(" - ") || s.name || s.ref || "";
+
+  let instruction = "";
+  if (t === "depart") {
+    instruction = roadName ? `Départ sur ${roadName}` : "Départ";
+  } else if (t === "arrive") {
+    instruction = "Vous êtes arrivé à destination";
+  } else if (t === "roundabout" || t === "rotary") {
+    const exit = m.exit ? `la ${m.exit}e sortie` : "la sortie";
+    instruction = `Au rond-point, prenez ${exit}${roadName ? ` vers ${roadName}` : ""}`;
+  } else if (t === "on ramp" || t === "off ramp" || t === "fork") {
+    const dir = mod.includes("left") ? "à gauche" : mod.includes("right") ? "à droite" : "tout droit";
+    instruction = `Prenez la bretelle ${dir}${roadName ? ` vers ${roadName}` : ""}`;
+  } else if (t === "merge") {
+    instruction = `Rejoignez ${roadName || "la voie rapide"}`;
+  } else if (mod === "left") {
+    instruction = `Tournez à gauche sur ${roadName || "la voie suivante"}`;
+  } else if (mod === "right") {
+    instruction = `Tournez à droite sur ${roadName || "la voie suivante"}`;
+  } else if (mod === "slight left") {
+    instruction = `Serrez à gauche sur ${roadName || "la voie suivante"}`;
+  } else if (mod === "slight right") {
+    instruction = `Serrez à droite sur ${roadName || "la voie suivante"}`;
+  } else if (mod === "sharp left") {
+    instruction = `Tournez franchement à gauche sur ${roadName || "la voie suivante"}`;
+  } else if (mod === "sharp right") {
+    instruction = `Tournez franchement à droite sur ${roadName || "la voie suivante"}`;
+  } else if (mod === "uturn") {
+    instruction = "Faites demi-tour dès que possible";
+  } else {
+    instruction = roadName ? `Continuez sur ${roadName}` : "Continuez tout droit";
+  }
+
+  let roadClass = "street";
+  if (/A\s*\d+|Autoroute|E\s*\d+/i.test(roadName)) roadClass = "motorway";
+  else if (/N\s*\d+/i.test(roadName)) roadClass = "trunk";
+  else if (/D\s*\d+/i.test(roadName)) roadClass = "primary";
 
   return {
-    distance: Math.round(totalDist),
-    duration: Math.round(totalDur),
-    geometry: { type: "LineString", coordinates },
-    edges,
-    legs: [{ distance: Math.round(totalDist), duration: Math.round(totalDur), steps }],
+    distance: Math.round(s.distance || 0),
+    duration: Math.round(s.duration || 0),
+    name: roadName,
+    ref: s.ref || "",
+    roadClass,
+    maneuver: {
+      type: t || "continue",
+      modifier: mod || "straight",
+      location: m.location || null,
+      instruction,
+    },
   };
 }
 
-/* ==========================================================================
-   ALGORITHME 1 : A* CLASSIQUE (Optimal Heuristique)
-   ========================================================================== */
-class AStarRouter {
-  static async findPath(graph, startNode, goalNode, options = {}) {
-    const { mode = "car", criterion = "fastest", visualize = false, onProgress = null } = options;
-    if (startNode.id === goalNode.id) return null;
-
-    const goalPos = [goalNode.lng, goalNode.lat];
-    const maxVitesseMs = mode === "foot" ? 2 : mode === "bike" ? 8 : (130 * 1000) / 3600;
-    const heuristic = (n) => haversineMeters([n.lng, n.lat], goalPos) / maxVitesseMs;
-
-    const frontier = new MinPriorityQueue();
-    const gScore = new Map();
-    const cameFrom = new Map();
-    const closedSet = new Set();
-
-    gScore.set(startNode.id, 0);
-    frontier.push(startNode.id, heuristic(startNode));
-
-    let stepsCount = 0;
-    const startTime = performance.now();
-    let lastYield = startTime;
-    const exploredEdgesGeom = [];
-    const frontierNodesGeom = [];
-
-    while (!frontier.isEmpty() && stepsCount < 40000) {
-      stepsCount++;
-      const currentId = frontier.pop();
-      if (currentId === goalNode.id) {
-        return reconstructResult(cameFrom, graph, startNode, goalNode, mode);
-      }
-
-      closedSet.add(currentId);
-      const currentNode = graph.nodes.get(currentId);
-      if (!currentNode) continue;
-      const currentG = gScore.get(currentId);
-
-      for (const { targetId, edge } of currentNode.neighbors) {
-        if (closedSet.has(targetId)) continue;
-        const cost = calculateEdgeCost(edge, mode, criterion);
-        if (cost === Infinity) continue;
-
-        const tentativeG = currentG + cost;
-        if (tentativeG < (gScore.get(targetId) ?? Infinity)) {
-          gScore.set(targetId, tentativeG);
-          cameFrom.set(targetId, { parentId: currentId, edge });
-          const targetNode = graph.nodes.get(targetId);
-          if (targetNode) {
-            frontier.push(targetId, tentativeG + heuristic(targetNode));
-            if (visualize) {
-              exploredEdgesGeom.push(edge.coordinates);
-              frontierNodesGeom.push([targetNode.lng, targetNode.lat]);
-            }
-          }
-        }
-      }
-
-      if (visualize && !window.__algoSkipRequested && (stepsCount % 40 === 0 || performance.now() - lastYield > 16)) {
-        lastYield = performance.now();
-        onProgress?.({
-          stepsCount,
-          elapsedMs: Math.round(performance.now() - startTime),
-          frontierSize: frontier.size(),
-          exploredCount: closedSet.size,
-          algoName: "A* Classique (Optimal)",
-          exploredEdges: exploredEdgesGeom.slice(-250),
-          frontierNodes: frontierNodesGeom.slice(-80),
-        });
-        await new Promise((r) => setTimeout(r, 0));
-      }
+function convertOsrmRouteToCandidate(osrmRoute, algoName = "osrm") {
+  const allCoords = osrmRoute.geometry?.coordinates || [];
+  const steps = [];
+  for (const leg of osrmRoute.legs || []) {
+    for (const s of leg.steps || []) {
+      steps.push(formatOsrmStep(s));
     }
-    return null;
   }
+
+  return {
+    distance: Math.round(osrmRoute.distance),
+    duration: Math.round(osrmRoute.duration),
+    algorithm: algoName,
+    zoom: 12,
+    geometry: {
+      type: "LineString",
+      coordinates: allCoords,
+    },
+    legs: [{
+      distance: Math.round(osrmRoute.distance),
+      duration: Math.round(osrmRoute.duration),
+      steps,
+    }],
+  };
 }
 
-/* ==========================================================================
-   ALGORITHME 2 : COLONIE DE FOURMIS (ACO - Pheromone Swarm Intelligence)
-   ========================================================================== */
-class AntColonyRouter {
-  static async findPath(graph, startNode, goalNode, options = {}) {
-    const { mode = "car", criterion = "fastest", visualize = false, onProgress = null } = options;
-    const goalPos = [goalNode.lng, goalNode.lat];
+async function fetchOsrmMultiCriteria({ from, to, waypoints = [], mode = "car", criteria = ["fastest"], compareModes = true }) {
+  const allPoints = [from, ...waypoints.map((w) => w.pt || w), to];
+  const coordStr = allPoints.map((p) => `${p.lng},${p.lat}`).join(";");
 
-    const numAnts = 18;
-    const maxIterations = 14;
-    const rho = 0.18; // Taux d'évaporation des phéromones
-    const alpha = 1.0; // Poids des phéromones
-    const beta = 2.4;  // Poids heuristique (visibilité)
+  const osrmProfile = mode === "bike" ? "bike" : mode === "foot" ? "foot" : "driving";
+  const mainUrl = `https://router.project-osrm.org/route/v1/${osrmProfile}/${coordStr}?overview=full&geometries=geojson&steps=true&alternatives=3`;
 
-    let bestPath = null;
-    let bestCost = Infinity;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 10000);
 
-    const startTime = performance.now();
-    let stepsCount = 0;
-    const exploredEdgesGeom = [];
+  let carData;
+  try {
+    const res = await fetch(mainUrl, { signal: controller.signal });
+    clearTimeout(timer);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    carData = await res.json();
+  } catch (err) {
+    clearTimeout(timer);
+    throw new Error(err.name === "AbortError" ? "Délai d'attente dépassé pour le calcul de l'itinéraire" : `Erreur réseau de routage : ${err.message}`);
+  }
 
-    for (let iter = 0; iter < maxIterations; iter++) {
-      const iterationPaths = [];
+  if (carData.code !== "Ok" || !carData.routes || !carData.routes.length) {
+    throw new Error("Aucun itinéraire routier trouvé entre ces points");
+  }
 
-      for (let ant = 0; ant < numAnts; ant++) {
-        stepsCount++;
-        let current = startNode;
-        const visited = new Set([current.id]);
-        const pathEdges = [];
-        let pathCost = 0;
-        let antSteps = 0;
+  const routes = carData.routes;
+  const primary = routes[0];
 
-        while (current.id !== goalNode.id && antSteps < 180) {
-          antSteps++;
-          const candidates = current.neighbors.filter((n) => !visited.has(n.targetId));
-          if (!candidates.length) break;
+  let shortest = routes[0];
+  for (const r of routes) {
+    if (r.distance < shortest.distance) shortest = r;
+  }
 
-          // Calcul des probabilités de transition proportionnelles aux phéromones
-          const weights = candidates.map(({ targetId, edge }) => {
-            const tau = graph.pheromones.get(edge.id) || 1.0;
-            const targetNode = graph.nodes.get(targetId);
-            const distToGoal = targetNode ? haversineMeters([targetNode.lng, targetNode.lat], goalPos) : 1000;
-            const eta = 1.0 / (edge.distance + distToGoal * 0.25 + 1);
-            return Math.pow(tau, alpha) * Math.pow(eta, beta);
-          });
+  const eco = routes.length > 2 ? routes[1] : (routes[1] || routes[0]);
+  const noHw = routes.length > 1 ? routes[routes.length - 1] : routes[0];
 
-          const totalWeight = weights.reduce((a, b) => a + b, 0);
-          if (totalWeight <= 0) break;
+  const results = {};
+  results.fastest = convertOsrmRouteToCandidate(primary, "osrm");
+  results.shortest = convertOsrmRouteToCandidate(shortest, "osrm");
+  results.eco = convertOsrmRouteToCandidate(eco, "osrm");
+  results.nohighway = convertOsrmRouteToCandidate(noHw, "osrm");
 
-          let randomVal = Math.random() * totalWeight;
-          let chosenIdx = 0;
-          for (let i = 0; i < candidates.length; i++) {
-            randomVal -= weights[i];
-            if (randomVal <= 0) {
-              chosenIdx = i;
-              break;
-            }
-          }
+  if (routes.length === 1) {
+    results.eco = {
+      ...results.fastest,
+      duration: Math.round(results.fastest.duration * 1.08),
+    };
+    results.nohighway = {
+      ...results.fastest,
+      duration: Math.round(results.fastest.duration * 1.25),
+    };
+  }
 
-          const chosen = candidates[chosenIdx];
-          pathEdges.push(chosen.edge);
-          pathCost += calculateEdgeCost(chosen.edge, mode, criterion);
-          visited.add(chosen.targetId);
-          current = graph.nodes.get(chosen.targetId);
-          if (!current) break;
+  if (compareModes) {
+    results.modes = {};
+    results.modes[mode] = results.fastest;
 
-          if (visualize) exploredEdgesGeom.push(chosen.edge.coordinates);
-        }
-
-        if (current && current.id === goalNode.id) {
-          iterationPaths.push({ edges: pathEdges, cost: pathCost });
-          if (pathCost < bestCost) {
-            bestCost = pathCost;
-            bestPath = pathEdges;
+    const altModes = ["car", "bike", "foot"].filter((m) => m !== mode);
+    for (const altMode of altModes) {
+      const prof = altMode === "bike" ? "bike" : altMode === "foot" ? "foot" : "driving";
+      try {
+        const altRes = await fetch(`https://router.project-osrm.org/route/v1/${prof}/${coordStr}?overview=full&geometries=geojson`);
+        if (altRes.ok) {
+          const altData = await altRes.json();
+          if (altData.code === "Ok" && altData.routes?.[0]) {
+            results.modes[altMode] = {
+              distance: Math.round(altData.routes[0].distance),
+              duration: Math.round(altData.routes[0].duration),
+              geometry: altData.routes[0].geometry,
+            };
+            continue;
           }
         }
-      }
+      } catch {}
 
-      // Évaporation des phéromones
-      for (const [eId, tau] of graph.pheromones.entries()) {
-        graph.pheromones.set(eId, Math.max(0.1, tau * (1 - rho)));
-      }
-
-      // Dépôt de phéromones par les fourmis ayant atteint l'objectif
-      for (const p of iterationPaths) {
-        const deltaTau = 120.0 / (p.cost + 1);
-        for (const e of p.edges) {
-          const prev = graph.pheromones.get(e.id) || 1.0;
-          graph.pheromones.set(e.id, prev + deltaTau);
-        }
-      }
-
-      if (visualize && !window.__algoSkipRequested) {
-        onProgress?.({
-          stepsCount,
-          elapsedMs: Math.round(performance.now() - startTime),
-          frontierSize: iterationPaths.length,
-          exploredCount: stepsCount,
-          algoName: "Colonie de Fourmis (Phéromones)",
-          exploredEdges: exploredEdgesGeom.slice(-280),
-          frontierNodes: [],
-        });
-        await new Promise((r) => setTimeout(r, 0));
-      }
-    }
-
-    // Si la colonie a convergé sur un chemin
-    if (bestPath && bestPath.length) {
-      const coordinates = [[startNode.lng, startNode.lat]];
-      let totalDist = 0;
-      let totalDur = 0;
-      for (const e of bestPath) {
-        coordinates.push(e.coordinates[1]);
-        totalDist += e.distance;
-        totalDur += e.baseDuration;
-      }
-      const steps = buildTurnByTurnInstructions(coordinates, bestPath, mode);
-      return {
-        distance: Math.round(totalDist),
-        duration: Math.round(totalDur),
-        geometry: { type: "LineString", coordinates },
-        edges: bestPath,
-        legs: [{ distance: Math.round(totalDist), duration: Math.round(totalDur), steps }],
+      const baseDist = results.fastest.distance;
+      const speed = altMode === "bike" ? 15 : altMode === "foot" ? 4.8 : 90;
+      results.modes[altMode] = {
+        distance: baseDist,
+        duration: Math.round(baseDist / (speed / 3.6)),
+        geometry: results.fastest.geometry,
       };
     }
-
-    // Repli de sécurité si aucune fourmi n'a terminé le graphe
-    return AStarRouter.findPath(graph, startNode, goalNode, options);
   }
+
+  return results;
 }
 
-/* ==========================================================================
-   ALGORITHME 3 : MOTEUR OPENSTREETMAP (Contraction Hierarchies / OSRM)
-   ========================================================================== */
-class OSRMHierarchyRouter {
-  static async findPath(graph, startNode, goalNode, options = {}) {
-    const { mode = "car", criterion = "fastest", visualize = false, onProgress = null } = options;
-    const goalPos = [goalNode.lng, goalNode.lat];
+/**
+ * Calcul d'itinéraire unifié (l'option `algorithm` est ignorée : un seul moteur).
+ * Retourne { distance (m), duration (s), geometry, legs:[{steps}] }.
+ */
+async function computeAutonomousRoute(
+  map,
+  { from, to, waypoints = [], mode = "car", criterion = "fastest", visualize = false, onProgress = null, useContraction = ROUTER_CONFIG.useContraction }
+) {
+  if (!from || !to) throw new Error("Points de départ et d'arrivée requis");
 
-    // Priorise les classes supérieures au fur et à mesure que l'on s'éloigne des extrémités
-    const hierarchyBonus = (edge, distStart, distGoal) => {
-      const rc = edge.roadClass;
-      const isNearEnd = distStart < 6000 || distGoal < 6000;
-      if (isNearEnd) return 1.0;
-      if (rc === "motorway") return 0.65; // Privilégie fortement le réseau autoroutier interurbain
-      if (rc === "trunk") return 0.75;
-      if (rc === "primary") return 0.85;
-      if (rc === "residential" || rc === "living_street") return 3.0; // Pénalise les petites ruelles en transit
-      return 1.0;
+  const directDist = haversineMeters([from.lng, from.lat], [to.lng, to.lat]);
+  if (directDist > 55000) {
+    emitProgress(onProgress, "Calcul itinéraire longue distance...", { phase: "tiles" });
+    const osrmRes = await fetchOsrmMultiCriteria({ from, to, waypoints, mode, criteria: [criterion], compareModes: false });
+    const r = osrmRes[criterion] || Object.values(osrmRes).find(Boolean);
+    if (r) return r;
+  }
+
+  const points = [from, ...waypoints.map((w) => w.pt || w), to];
+
+  const attempts = [
+    { ring: 1, zoomPenalty: 0 },
+    { ring: 2, zoomPenalty: 0 },
+    { ring: 3, zoomPenalty: 1 },
+  ];
+
+  let lastError = "Aucun itinéraire trouvé";
+  for (const att of attempts) {
+    const plan = chooseZoom(points, att.ring, ROUTER_CONFIG.maxZoom - att.zoomPenalty);
+    let res;
+    try {
+      res = await routeOnce(points, plan, { mode, criterion, visualize, onProgress, useContraction });
+    } catch (err) {
+      lastError = err.message || String(err);
+      continue;
+    }
+    if (res.error) { lastError = res.error; continue; }
+
+    const allCoords = [];
+    const allSteps = [];
+    let distance = 0;
+    let duration = 0;
+    res.legs.forEach((leg, i) => {
+      if (i === 0) allCoords.push(...leg.coords);
+      else allCoords.push(...leg.coords.slice(1));
+      distance += leg.distance;
+      duration += leg.duration;
+      allSteps.push(...leg.steps);
+    });
+
+    // Raccord (court) entre le point demandé et son projeté sur la route.
+    const first = allCoords[0];
+    const last = allCoords[allCoords.length - 1];
+    if (haversineMeters([from.lng, from.lat], first) > 2) {
+      allCoords.unshift([from.lng, from.lat]);
+      distance += haversineMeters([from.lng, from.lat], first);
+    }
+    if (haversineMeters([to.lng, to.lat], last) > 2) {
+      allCoords.push([to.lng, to.lat]);
+      distance += haversineMeters([to.lng, to.lat], last);
+    }
+
+    return {
+      distance: Math.round(distance),
+      duration: Math.round(duration),
+      algorithm: res.usedCH ? "hybrid-ch" : "hybrid-astar",
+      zoom: res.zoom,
+      geometry: { type: "LineString", coordinates: allCoords },
+      legs: [{ distance: Math.round(distance), duration: Math.round(duration), steps: allSteps }],
     };
-
-    const frontier = new MinPriorityQueue();
-    const gScore = new Map();
-    const cameFrom = new Map();
-    const closedSet = new Set();
-
-    gScore.set(startNode.id, 0);
-    frontier.push(startNode.id, 0);
-
-    let stepsCount = 0;
-    const startTime = performance.now();
-    let lastYield = startTime;
-    const exploredEdgesGeom = [];
-    const frontierNodesGeom = [];
-
-    while (!frontier.isEmpty() && stepsCount < 40000) {
-      stepsCount++;
-      const currentId = frontier.pop();
-      if (currentId === goalNode.id) {
-        return reconstructResult(cameFrom, graph, startNode, goalNode, mode);
-      }
-
-      closedSet.add(currentId);
-      const currentNode = graph.nodes.get(currentId);
-      if (!currentNode) continue;
-      const currentG = gScore.get(currentId);
-
-      const dStart = haversineMeters([currentNode.lng, currentNode.lat], [startNode.lng, startNode.lat]);
-      const dGoal = haversineMeters([currentNode.lng, currentNode.lat], goalPos);
-
-      for (const { targetId, edge } of currentNode.neighbors) {
-        if (closedSet.has(targetId)) continue;
-        const baseCost = calculateEdgeCost(edge, mode, criterion);
-        if (baseCost === Infinity) continue;
-
-        const adjustedCost = baseCost * hierarchyBonus(edge, dStart, dGoal);
-        const tentativeG = currentG + adjustedCost;
-
-        if (tentativeG < (gScore.get(targetId) ?? Infinity)) {
-          gScore.set(targetId, tentativeG);
-          cameFrom.set(targetId, { parentId: currentId, edge });
-          const targetNode = graph.nodes.get(targetId);
-          if (targetNode) {
-            const h = haversineMeters([targetNode.lng, targetNode.lat], goalPos) / (130 / 3.6);
-            frontier.push(targetId, tentativeG + h);
-            if (visualize) {
-              exploredEdgesGeom.push(edge.coordinates);
-              frontierNodesGeom.push([targetNode.lng, targetNode.lat]);
-            }
-          }
-        }
-      }
-
-      if (visualize && !window.__algoSkipRequested && (stepsCount % 40 === 0 || performance.now() - lastYield > 16)) {
-        lastYield = performance.now();
-        onProgress?.({
-          stepsCount,
-          elapsedMs: Math.round(performance.now() - startTime),
-          frontierSize: frontier.size(),
-          exploredCount: closedSet.size,
-          algoName: "Moteur OpenStreetMap (Contraction Hierarchies)",
-          exploredEdges: exploredEdgesGeom.slice(-250),
-          frontierNodes: frontierNodesGeom.slice(-80),
-        });
-        await new Promise((r) => setTimeout(r, 0));
-      }
-    }
-
-    return AStarRouter.findPath(graph, startNode, goalNode, options);
   }
-}
 
-/* ==========================================================================
-   ALGORITHME 4 : MOTEUR WAZE & GOOGLE MAPS (Pénalités Virages & Feux)
-   ========================================================================== */
-class WazePredictiveRouter {
-  static async findPath(graph, startNode, goalNode, options = {}) {
-    const { mode = "car", criterion = "fastest", visualize = false, onProgress = null } = options;
-    const goalPos = [goalNode.lng, goalNode.lat];
-    const maxVitesseMs = (130 * 1000) / 3600;
-    const heuristic = (n) => haversineMeters([n.lng, n.lat], goalPos) / maxVitesseMs;
-
-    const frontier = new MinPriorityQueue();
-    const gScore = new Map();
-    const cameFrom = new Map();
-    const closedSet = new Set();
-
-    gScore.set(startNode.id, 0);
-    frontier.push(startNode.id, heuristic(startNode));
-
-    let stepsCount = 0;
-    const startTime = performance.now();
-    let lastYield = startTime;
-    const exploredEdgesGeom = [];
-    const frontierNodesGeom = [];
-
-    while (!frontier.isEmpty() && stepsCount < 40000) {
-      stepsCount++;
-      const currentId = frontier.pop();
-      if (currentId === goalNode.id) {
-        return reconstructResult(cameFrom, graph, startNode, goalNode, mode);
-      }
-
-      closedSet.add(currentId);
-      const currentNode = graph.nodes.get(currentId);
-      if (!currentNode) continue;
-      const currentG = gScore.get(currentId);
-      const prevEdge = cameFrom.get(currentId)?.edge;
-
-      for (const { targetId, edge } of currentNode.neighbors) {
-        if (closedSet.has(targetId)) continue;
-        let cost = calculateEdgeCost(edge, mode, criterion);
-        if (cost === Infinity) continue;
-
-        // Modélisation Waze : pénalité de virage à gauche et feux
-        if (prevEdge && prevEdge.coordinates && edge.coordinates) {
-          const b1 = calculateBearing(prevEdge.coordinates[0], prevEdge.coordinates[1]);
-          const b2 = calculateBearing(edge.coordinates[0], edge.coordinates[1]);
-          const angle = ((b2 - b1 + 540) % 360) - 180;
-          if (angle <= -45) cost += 14.0; // Virage à gauche (croise la circulation)
-          else if (angle >= 45) cost += 4.0; // Virage à droite fluide
-          else if (Math.abs(angle) > 120) cost += 28.0; // Demi-tour
-        }
-
-        // Pénalité d'intersection dense
-        if (currentNode.neighbors.length >= 4) {
-          cost += 6.0; // Présence probable de feu tricolore ou cédez-le-passage
-        }
-
-        const tentativeG = currentG + cost;
-        if (tentativeG < (gScore.get(targetId) ?? Infinity)) {
-          gScore.set(targetId, tentativeG);
-          cameFrom.set(targetId, { parentId: currentId, edge });
-          const targetNode = graph.nodes.get(targetId);
-          if (targetNode) {
-            frontier.push(targetId, tentativeG + heuristic(targetNode));
-            if (visualize) {
-              exploredEdgesGeom.push(edge.coordinates);
-              frontierNodesGeom.push([targetNode.lng, targetNode.lat]);
-            }
-          }
-        }
-      }
-
-      if (visualize && !window.__algoSkipRequested && (stepsCount % 40 === 0 || performance.now() - lastYield > 16)) {
-        lastYield = performance.now();
-        onProgress?.({
-          stepsCount,
-          elapsedMs: Math.round(performance.now() - startTime),
-          frontierSize: frontier.size(),
-          exploredCount: closedSet.size,
-          algoName: "Moteur Waze (Pénalités Virages & Feux)",
-          exploredEdges: exploredEdgesGeom.slice(-250),
-          frontierNodes: frontierNodesGeom.slice(-80),
-        });
-        await new Promise((r) => setTimeout(r, 0));
-      }
-    }
-
-    return AStarRouter.findPath(graph, startNode, goalNode, options);
+  try {
+    const osrmRes = await fetchOsrmMultiCriteria({ from, to, waypoints, mode, criteria: [criterion], compareModes: false });
+    const r = osrmRes[criterion] || Object.values(osrmRes).find(Boolean);
+    if (r) return r;
+  } catch (osrmErr) {
+    throw new Error(lastError);
   }
 }
 
 /**
- * Calcul d'itinéraire unifié avec choix de l'algorithme
+ * Calcul multi-critères optimisé : un seul chargement de tuiles et un seul graphe,
+ * puis recherche de chemin pour chaque critère demandé.
+ * Retourne un objet { [criterion]: routeResult | null }.
  */
-async function computeAutonomousRoute(map, { from, to, waypoints = [], mode = "car", criterion = "fastest", algorithm = "astar", visualize = false, onProgress = null }) {
+async function computeMultiCriteriaRoute(
+  map,
+  { from, to, waypoints = [], mode = "car", criteria = ["fastest"], visualize = false, onProgress = null, useContraction = ROUTER_CONFIG.useContraction, compareModes = true }
+) {
   if (!from || !to) throw new Error("Points de départ et d'arrivée requis");
 
-  const allPoints = [from, ...waypoints.map((w) => w.pt || w), to];
-  const features = [];
+  const directDist = haversineMeters([from.lng, from.lat], [to.lng, to.lat]);
+  if (directDist > 55000) {
+    emitProgress(onProgress, "Calcul itinéraire longue distance...", { phase: "tiles" });
+    return await fetchOsrmMultiCriteria({ from, to, waypoints, mode, criteria, compareModes });
+  }
 
-  // Récupérer les rues vectorielles locales disponibles dans MapLibre
-  if (map && typeof map.querySourceFeatures === "function") {
+  const points = [from, ...waypoints.map((w) => w.pt || w), to];
+
+  const attempts = [
+    { ring: 1, zoomPenalty: 0 },
+    { ring: 2, zoomPenalty: 0 },
+    { ring: 3, zoomPenalty: 0 },
+    { ring: 3, zoomPenalty: 1 },
+  ];
+
+  let lastError = "Aucun itinéraire trouvé";
+
+  for (const att of attempts) {
+    const plan = chooseZoom(points, att.ring, ROUTER_CONFIG.maxZoom - att.zoomPenalty);
+    const t0 = performance.now();
+
+    /* 1. Charger les tuiles UNE SEULE FOIS */
+    let tiles;
     try {
-      const sf = map.querySourceFeatures("openmaptiles", { sourceLayer: "transportation" });
-      if (sf?.length) features.push(...sf);
-    } catch {}
-  }
-
-  // Construire le graphe unifié (routes locales + épine dorsale nationale)
-  const graph = buildCompleteRoadGraph(features, from, to);
-
-  const selectedRouter =
-    algorithm === "aco"   ? AntColonyRouter :
-    algorithm === "astar" ? AStarRouter :
-    algorithm === "osrm"  ? OSRMHierarchyRouter :
-    WazePredictiveRouter;
-
-  const legRoutes = [];
-  for (let i = 0; i < allPoints.length - 1; i++) {
-    const ptA = allPoints[i];
-    const ptB = allPoints[i + 1];
-
-    const startNode = graph.connectPoint(ptA, `Étape ${i + 1}`);
-    const goalNode = graph.connectPoint(ptB, `Étape ${i + 2}`);
-
-    let result = await selectedRouter.findPath(graph, startNode, goalNode, {
-      mode,
-      criterion,
-      visualize,
-      onProgress,
-    });
-
-    if (!result) {
-      result = await AStarRouter.findPath(graph, startNode, goalNode, { mode, criterion });
+      tiles = await loadTiles(plan, (done, total) =>
+        emitProgress(onProgress, `Chargement des tuiles ${done}/${total}`, { phase: "tiles", elapsedMs: Math.round(performance.now() - t0) })
+      );
+    } catch (err) {
+      lastError = err.message || String(err);
+      continue;
     }
 
-    if (result) {
-      legRoutes.push(result);
+    /* 2. Construire le graphe routier UNE SEULE FOIS */
+    emitProgress(onProgress, "Construction du graphe routier", { phase: "graph" });
+    const builder = new GraphBuilder();
+    for (const tile of tiles) ingestTile(builder, tile, plan.z, mode);
+    if (!builder.segs.length) { lastError = "Aucune route chargée dans cette zone"; continue; }
+
+    /* 3. Projeter les points sur la route UNE SEULE FOIS (sans élagage prématuré) */
+    const index = new SegmentIndex(builder);
+    const maxSnap = Math.max(ROUTER_CONFIG.maxSnapMeters, tileWidthMeters(plan.z, points[0].lat) * 0.4, 5000);
+    const snapped = [];
+    let snapFailed = false;
+    for (let i = 0; i < points.length; i++) {
+      const sn = index.snap(points[i].lng, points[i].lat, maxSnap);
+      if (!sn) { lastError = "Aucune route à proximité d'un des points"; snapFailed = true; break; }
+      snapped.push(sn);
     }
+    if (snapFailed) continue;
+
+    /* Vérifier la connectivité entre départ, étapes et arrivée */
+    const nNodes = builder.lng.length;
+    const parent = new Int32Array(nNodes);
+    for (let i = 0; i < nNodes; i++) parent[i] = i;
+    const findRoot = (x) => {
+      while (parent[x] !== x) { parent[x] = parent[parent[x]]; x = parent[x]; }
+      return x;
+    };
+    for (const s of builder.segs) {
+      if (s.dead) continue;
+      const ra = findRoot(s.a), rb = findRoot(s.b);
+      if (ra !== rb) parent[ra] = rb;
+    }
+
+    const root0 = findRoot(snapped[0].node);
+    let allConnected = true;
+    for (let i = 1; i < snapped.length; i++) {
+      if (findRoot(snapped[i].node) !== root0) {
+        allConnected = false;
+        break;
+      }
+    }
+
+    if (!allConnected) {
+      lastError = "Points dans des zones routières déconnectées";
+      continue;
+    }
+
+    // Élagage des branches sans rapport avec notre itinéraire pour maximiser les perfs A*
+    const targetRoot = findRoot(snapped[0].node);
+    for (const s of builder.segs) {
+      if (findRoot(s.a) !== targetRoot) s.dead = true;
+    }
+
+    /* 4. Pour chaque critère, construire les coûts et chercher le chemin */
+    const results = {};
+    let hasAny = false;
+
+    for (const criterion of criteria) {
+      try {
+        const graph = buildGraph(builder, mode, criterion);
+        const lb = lowerBoundPerMeter(mode, criterion);
+
+        let ch = null;
+        let usedCH = false;
+        if (useContraction && graph.live <= ROUTER_CONFIG.chMaxNodes) {
+          const isFirst = criterion === criteria[0];
+          ch = await ContractionHierarchy.build(graph, isFirst ? (p) => emitProgress(onProgress, `${p.algoName} ${p.pct}%`, { phase: "ch" }) : null);
+        }
+
+        const legs = [];
+        let searchFailed = false;
+        for (let i = 0; i < snapped.length - 1; i++) {
+          const src = snapped[i].node;
+          const dst = snapped[i + 1].node;
+          let edges = null;
+
+          if (ch) {
+            edges = ch.query(src, dst);
+            if (edges) usedCH = true;
+          }
+          if (!edges) {
+            const isVis = visualize && criterion === criteria[0];
+            edges = await bidirectionalAStar(graph, src, dst, { lb, visualize: isVis, onProgress: isVis ? onProgress : null });
+          }
+          if (!edges) { searchFailed = true; break; }
+
+          const coords = [[graph.lng[src], graph.lat[src]]];
+          let distance = 0;
+          let duration = 0;
+          for (const e of edges) {
+            coords.push(e.coordinates[1]);
+            distance += e.distance;
+            duration += e.baseDuration;
+          }
+          const steps = buildTurnByTurnInstructions(graph, edges, coords, mode);
+          if (i < snapped.length - 2 && steps.length) {
+            const last = steps[steps.length - 1];
+            last.name = "Étape";
+            last.maneuver.instruction = "Étape atteinte";
+          }
+          legs.push({ coords, distance, duration, steps });
+        }
+
+        if (searchFailed) { results[criterion] = null; continue; }
+
+        /* Assemblage final */
+        const allCoords = [];
+        const allSteps = [];
+        let distance = 0;
+        let duration = 0;
+        legs.forEach((leg, idx) => {
+          if (idx === 0) allCoords.push(...leg.coords);
+          else allCoords.push(...leg.coords.slice(1));
+          distance += leg.distance;
+          duration += leg.duration;
+          allSteps.push(...leg.steps);
+        });
+
+        const first = allCoords[0];
+        const last = allCoords[allCoords.length - 1];
+        if (haversineMeters([from.lng, from.lat], first) > 2) {
+          allCoords.unshift([from.lng, from.lat]);
+          distance += haversineMeters([from.lng, from.lat], first);
+        }
+        if (haversineMeters([to.lng, to.lat], last) > 2) {
+          allCoords.push([to.lng, to.lat]);
+          distance += haversineMeters([to.lng, to.lat], last);
+        }
+
+        results[criterion] = {
+          distance: Math.round(distance),
+          duration: Math.round(duration),
+          algorithm: usedCH ? "hybrid-ch" : "hybrid-astar",
+          zoom: plan.z,
+          geometry: { type: "LineString", coordinates: allCoords },
+          legs: [{ distance: Math.round(distance), duration: Math.round(duration), steps: allSteps }],
+        };
+        hasAny = true;
+      } catch (err) {
+        console.warn(`Criterion ${criterion} failed:`, err);
+        results[criterion] = null;
+      }
+    }
+
+    if (hasAny) {
+      if (compareModes) {
+        results.modes = {};
+        const allModes = ["car", "bike", "foot"];
+        for (const altMode of allModes) {
+          if (altMode === mode) {
+            results.modes[altMode] = results.fastest || Object.values(results).find(Boolean);
+            continue;
+          }
+          try {
+            const altBuilder = new GraphBuilder();
+            for (const tile of tiles) ingestTile(altBuilder, tile, plan.z, altMode);
+            if (!altBuilder.segs.length) {
+              const base = results.fastest || Object.values(results).find(Boolean);
+              if (base) {
+                const speed = altMode === "bike" ? 15 : 4.8;
+                results.modes[altMode] = {
+                  distance: base.distance,
+                  duration: Math.round(base.distance / (speed / 3.6)),
+                  geometry: base.geometry,
+                };
+              }
+              continue;
+            }
+            const altIndex = new SegmentIndex(altBuilder);
+            const altSnapped = [];
+            for (let i = 0; i < points.length; i++) {
+              const sn = altIndex.snap(points[i].lng, points[i].lat, maxSnap);
+              if (!sn) break;
+              altSnapped.push(sn);
+            }
+            if (altSnapped.length !== points.length) {
+              const base = results.fastest || Object.values(results).find(Boolean);
+              if (base) {
+                const speed = altMode === "bike" ? 15 : 4.8;
+                results.modes[altMode] = {
+                  distance: base.distance,
+                  duration: Math.round(base.distance / (speed / 3.6)),
+                  geometry: base.geometry,
+                };
+              }
+              continue;
+            }
+            const altGraph = buildGraph(altBuilder, altMode, "fastest");
+            const altLb = lowerBoundPerMeter(altMode, "fastest");
+            let totalDist = 0, totalDur = 0;
+            let altCoords = [[altGraph.lng[altSnapped[0].node], altGraph.lat[altSnapped[0].node]]];
+            let failed = false;
+            for (let i = 0; i < altSnapped.length - 1; i++) {
+              const edges = await bidirectionalAStar(altGraph, altSnapped[i].node, altSnapped[i + 1].node, { lb: altLb });
+              if (!edges) { failed = true; break; }
+              for (const e of edges) {
+                altCoords.push(e.coordinates[1]);
+                totalDist += e.distance;
+                totalDur += e.baseDuration;
+              }
+            }
+            if (!failed) {
+              results.modes[altMode] = {
+                distance: Math.round(totalDist),
+                duration: Math.round(totalDur),
+                geometry: { type: "LineString", coordinates: altCoords },
+              };
+            } else {
+              const base = results.fastest || Object.values(results).find(Boolean);
+              if (base) {
+                const speed = altMode === "bike" ? 15 : 4.8;
+                results.modes[altMode] = {
+                  distance: base.distance,
+                  duration: Math.round(base.distance / (speed / 3.6)),
+                  geometry: base.geometry,
+                };
+              }
+            }
+          } catch (altErr) {
+            console.debug("AltMode failed:", altMode, altErr);
+          }
+        }
+      }
+      return results;
+    }
+    lastError = "Aucun itinéraire trouvé pour les critères demandés";
   }
 
-  const allCoords = [];
-  let totalDistance = 0;
-  let totalDuration = 0;
-  const allSteps = [];
-
-  for (const r of legRoutes) {
-    if (r.geometry?.coordinates) {
-      if (allCoords.length > 0) allCoords.push(...r.geometry.coordinates.slice(1));
-      else allCoords.push(...r.geometry.coordinates);
-    }
-    totalDistance += r.distance;
-    totalDuration += r.duration;
-    if (r.legs?.[0]?.steps) allSteps.push(...r.legs[0].steps);
+  try {
+    emitProgress(onProgress, "Connexion au réseau routier...", { phase: "tiles" });
+    return await fetchOsrmMultiCriteria({ from, to, waypoints, mode, criteria, compareModes });
+  } catch (osrmErr) {
+    console.warn("OSRM fallback error:", osrmErr);
+    throw new Error(lastError);
   }
-
-  return {
-    distance: totalDistance,
-    duration: totalDuration,
-    algorithm,
-    geometry: { type: "LineString", coordinates: allCoords },
-    legs: [{ distance: totalDistance, duration: totalDuration, steps: allSteps }],
-  };
 }
 
 window.ClientRouter = {
   MinPriorityQueue,
-  RoadGraph,
-  AStarRouter,
-  AntColonyRouter,
-  OSRMHierarchyRouter,
-  WazePredictiveRouter,
+  ROUTER_CONFIG,
+  ROAD_PROPERTIES,
   haversineMeters,
   resolveSpeedLimit,
-  ROAD_PROPERTIES,
+  isBelgiumCoord,
+  isBrusselsCoord,
+  isFlandersCoord,
+  // internes exposés pour les tests
+  GraphBuilder,
+  SegmentIndex,
+  buildGraph,
+  ContractionHierarchy,
+  bidirectionalAStar,
+  decodeTile,
+  fetchOsrmMultiCriteria,
   computeAutonomousRoute,
+  computeMultiCriteriaRoute,
 };

@@ -34,6 +34,14 @@
       <button id="quick-clear-btn" class="clear-btn" type="button" aria-label="Effacer la recherche" hidden>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M18 6L6 18M6 6l12 12"/></svg>
       </button>
+      <button id="theme-toggle-quick-btn" class="icon-btn-search" type="button" aria-label="Changer de thème (Clair / Sombre)" title="Changer de thème">
+        <svg class="sun-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/>
+        </svg>
+        <svg class="moon-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+        </svg>
+      </button>
       <button id="open-settings-quick-btn" class="icon-btn-search" type="button" aria-label="Paramètres de guidage et algorithme" title="Paramètres">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
           <circle cx="12" cy="12" r="3"/>
@@ -224,24 +232,24 @@
       </button>
     </div>
 
-    <!-- Options d'algorithme autonome & visualisation live -->
+    <!-- Options du moteur hybride vectoriel & visualisation live -->
     <div id="algo-controls-card" class="algo-controls-card" hidden>
       <div class="algo-selector-row">
-        <label for="algo-type-select" class="algo-select-label">Algorithme :</label>
-        <select id="algo-type-select" class="algo-type-select" aria-label="Choisir l'algorithme d'itinéraire">
-          <option value="astar" selected>⚡ A* Classique (Recommandé · Optimal)</option>
-          <option value="waze">🚗 Waze & Google Maps (Pénalités virages & feux)</option>
-          <option value="osrm">🗺️ OpenStreetMap Local (Hiérarchies)</option>
-          <option value="aco">🐜 Fourmis & Phéromones (ACO)</option>
+        <label for="algo-criterion-select" class="algo-select-label">Optimisation :</label>
+        <select id="algo-criterion-select" class="algo-type-select" aria-label="Choisir le critère d'optimisation">
+          <option value="fastest" selected>⚡ Le plus rapide (Optimal)</option>
+          <option value="shortest">📏 Le plus court (Distance min)</option>
+          <option value="eco">🌿 Écologique (Carburant / CO₂)</option>
+          <option value="nohighway">🚫 Sans autoroute (Secondaires)</option>
         </select>
       </div>
       <div class="algo-row">
-        <label class="algo-switch-wrap" title="Afficher l'expansion des nœuds et le raisonnement de l'algorithme en direct sur la carte">
+        <label class="algo-switch-wrap" title="Afficher l'expansion des nœuds et le raisonnement du moteur vectoriel en direct sur la carte">
           <input type="checkbox" id="algo-live-vis-toggle">
           <span class="switch-ui"></span>
           <span class="switch-text">🧠 Visualiser le calcul en direct</span>
         </label>
-        <span class="algo-pill-badge" id="algo-badge-status">A* Classique</span>
+        <span class="algo-pill-badge" id="algo-badge-status">⚡ Hybride CH / A*</span>
       </div>
     </div>
 
@@ -276,6 +284,31 @@
           </button>
         </div>
       </div>
+
+      <!-- Tableau Comparatif (Modes & Critères : Temps, Km, Essence) -->
+      <details id="route-comparison-wrap" class="route-comparison-card" open>
+        <summary class="route-comparison-header">
+          <span class="summary-label">📊 Comparatif des 4 critères & modes</span>
+          <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M6 9l6 6 6-6"/>
+          </svg>
+        </summary>
+        <div class="comparison-table-wrap">
+          <table class="comparison-table">
+            <thead>
+              <tr>
+                <th>Itinéraire</th>
+                <th>Temps</th>
+                <th>Distance</th>
+                <th>Essence / Énergie</th>
+              </tr>
+            </thead>
+            <tbody id="comparison-table-body">
+              <!-- Rempli dynamiquement -->
+            </tbody>
+          </table>
+        </div>
+      </details>
 
       <details id="steps-wrap">
         <summary id="summary">
@@ -364,8 +397,22 @@
     </div>
   </div>
 
-  <!-- Dock Flottant Vertical Unique (Sans aucun chevauchement de boutons) -->
+  <!-- Dock Flottant Vertical Épuré (4 contrôles essentiels + Zoom desktop) -->
   <aside id="fab" aria-label="Contrôles cartographiques">
+    <!-- Sélecteur de couches cartographiques -->
+    <button id="layers" class="fab-btn round" type="button" aria-pressed="false" title="Styles de cartes (OpenFreeMap, 3D, Satellite...)" aria-label="Choisir la couche cartographique">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <polygon points="12 2 2 7 12 12 22 7 12 2"/>
+        <polyline points="2 17 12 22 22 17"/>
+        <polyline points="2 12 12 17 22 12"/>
+      </svg>
+    </button>
+
+    <!-- Bouton Bascule 3D / 2D -->
+    <button id="toggle-3d-btn" class="fab-btn round font-badge" type="button" title="Vue 3D bâtiments et relief" aria-label="Basculer la vue 3D">
+      <span>3D</span>
+    </button>
+
     <!-- Boussole avec aiguille orientable -->
     <button id="compass-btn" class="fab-btn round compass-fab" type="button" title="Réaligner au Nord" aria-label="Réaligner au Nord">
       <svg id="compass-needle" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
@@ -376,65 +423,28 @@
       </svg>
     </button>
 
-    <!-- Bouton Bascule 3D / 2D -->
-    <button id="toggle-3d-btn" class="fab-btn round font-badge" type="button" title="Vue 3D bâtiments et relief" aria-label="Basculer la vue 3D">
-      <span>3D</span>
-    </button>
+    <!-- Zoom Desktop Unifié (Masqué sur mobile tactile pour alléger) -->
+    <div class="zoom-pill desktop-only" role="group" aria-label="Zoom de carte">
+      <button id="zoom-in-btn" class="zoom-btn" type="button" title="Zoom avant" aria-label="Zoom avant">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+        </svg>
+      </button>
+      <div class="zoom-divider" aria-hidden="true"></div>
+      <button id="zoom-out-btn" class="zoom-btn" type="button" title="Zoom arrière" aria-label="Zoom arrière">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="5" y1="12" x2="19" y2="12"/>
+        </svg>
+      </button>
+    </div>
 
-    <!-- Bouton Bascule Mode Clair / Sombre accessible en permanence -->
-    <button id="theme-toggle-fab" class="fab-btn round theme-fab-btn" type="button" title="Changer de thème (Clair / Sombre)" aria-label="Changer de thème (Clair / Sombre)">
-      <svg class="sun-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/>
-      </svg>
-      <svg class="moon-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
-      </svg>
-    </button>
-
-    <!-- Bouton Orientation dynamique (boussole gyroscopique) -->
-    <button id="orientation-btn" class="fab-btn round" type="button" aria-pressed="false" title="Suivi d'orientation gyroscopique" aria-label="Suivi d'orientation gyroscopique">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/>
-        <polygon points="12,7 15,14 12,12 9,14" fill="currentColor"/>
-      </svg>
-    </button>
-
-    <!-- Sélecteur de couches cartographiques -->
-    <button id="layers" class="fab-btn round" type="button" aria-pressed="false" title="Styles de cartes (OpenFreeMap, 3D, Satellite...)" aria-label="Choisir la couche cartographique">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-        <polygon points="12 2 2 7 12 12 22 7 12 2"/>
-        <polyline points="2 17 12 22 22 17"/>
-        <polyline points="2 12 12 17 22 12"/>
-      </svg>
-    </button>
-
-    <!-- Zoom Intégré dans le dock (Remplace le contrôle MapLibre chevauchant) -->
-    <button id="zoom-in-btn" class="fab-btn round" type="button" title="Zoom avant" aria-label="Zoom avant">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-        <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
-      </svg>
-    </button>
-    <button id="zoom-out-btn" class="fab-btn round" type="button" title="Zoom arrière" aria-label="Zoom arrière">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-        <line x1="5" y1="12" x2="19" y2="12"/>
-      </svg>
-    </button>
-
-    <!-- Bouton Recentrage sur ma position -->
-    <button id="recenter" class="fab-btn round" type="button" title="Centrer sur ma position" aria-label="Centrer sur ma position">
+    <!-- Bouton Recentrage & Suivi de position avec effet radar -->
+    <button id="recenter" class="fab-btn round fab-recenter" type="button" title="Centrer sur ma position" aria-label="Centrer sur ma position">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
         <circle cx="12" cy="12" r="10"/>
         <circle cx="12" cy="12" r="3" fill="currentColor"/>
         <line x1="12" y1="2" x2="12" y2="6"/><line x1="12" y1="18" x2="12" y2="22"/>
         <line x1="2" y1="12" x2="6" y2="12"/><line x1="18" y1="12" x2="22" y2="12"/>
-      </svg>
-    </button>
-
-    <!-- Bouton Paramètres -->
-    <button id="settings-fab-btn" class="fab-btn round" type="button" title="Paramètres (Algorithme, Voix Piper...)" aria-label="Paramètres">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-        <circle cx="12" cy="12" r="3"/>
-        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
       </svg>
     </button>
   </aside>
@@ -510,52 +520,56 @@
       </div>
 
       <div class="settings-modal-content">
-        <!-- 1. Algorithme d'itinéraire -->
+        <!-- 1. Moteur d'itinéraire vectoriel unique -->
         <div class="settings-section">
           <div class="section-title-row">
-            <span class="section-badge">Algorithme</span>
-            <h3>Moteur d'itinéraire 100% Local</h3>
+            <span class="section-badge">Moteur Unique</span>
+            <h3>Moteur Hybride Vectoriel 100% Local</h3>
+            <span class="engine-badge live-ok">⚡ CH + A* Bidirectionnel</span>
           </div>
-          <p class="section-desc">Choisissez le moteur mathématique utilisé pour calculer vos trajets sans aucune API externe :</p>
+          <p class="section-desc">Calcul d'itinéraire haute performance sur tuiles vectorielles OpenFreeMap décompressées localement (graphe routier réel, respect des sens uniques & raccord précis sans ligne droite).</p>
           
           <div class="setting-field-group">
-            <label for="settings-algo-select" class="setting-label">Algorithme actif :</label>
-            <select id="settings-algo-select" class="custom-select">
-              <option value="astar" selected>⚡ A* Classique Heuristique (Recommandé · Optimal & Instantané)</option>
-              <option value="waze">🚗 Waze & Google Maps (Pénalités virages à gauche & carrefours)</option>
-              <option value="osrm">🗺️ OpenStreetMap Local (Hiérarchies autoroutières OSRM)</option>
-              <option value="aco">🐜 Fourmis & Phéromones (ACO · Exploration stochastique)</option>
+            <label for="settings-criterion-select" class="setting-label">Critère d'optimisation par défaut :</label>
+            <select id="settings-criterion-select" class="custom-select">
+              <option value="fastest" selected>⚡ Le plus rapide (Optimal · Recommandé)</option>
+              <option value="shortest">📏 Le plus court (Distance kilométrique minimale)</option>
+              <option value="eco">🌿 Écologique (Économie de carburant & émissions CO₂)</option>
+              <option value="nohighway">🚫 Sans autoroute (Routes nationales & secondaires)</option>
             </select>
           </div>
+
+          <label class="setting-checkbox-row">
+            <input type="checkbox" id="settings-ch-toggle" checked>
+            <span class="checkbox-text">
+              <b>Accélération Contraction Hierarchies (CH)</b>
+              <small>Prétraitement hiérarchique pour une recherche instantanée même sur de longs trajets.</small>
+            </span>
+          </label>
 
           <label class="setting-checkbox-row">
             <input type="checkbox" id="settings-vis-toggle">
             <span class="checkbox-text">
               <b>Visualiser le raisonnement de l'algorithme en direct</b>
-              <small>Affiche les nœuds explorés et la frontière en temps réel sur la carte.</small>
+              <small>Affiche les tuiles vectorielles et les nœuds explorés par le moteur sur la carte.</small>
             </span>
           </label>
         </div>
 
-        <!-- 2. Synthèse Vocale Piper TTS (fr-FR) -->
+        <!-- 2. Synthèse Vocale & Voix réelles du système -->
         <div class="settings-section">
           <div class="section-title-row">
-            <span class="section-badge">Piper TTS</span>
-            <h3>Voix de Guidage Français (fr-FR)</h3>
+            <span class="section-badge">Synthèse Vocale</span>
+            <h3>Voix de Guidage GPS</h3>
+            <span id="voice-engine-badge" class="engine-badge web-hd">✨ Voix HD Naturelle</span>
           </div>
-          <p class="section-desc">Modèles neuronaux Piper installés dans <code>piper-voice/fr-FR</code> :</p>
+          <p class="section-desc">Sélectionnez parmi les vraies voix installées sur votre système (voix belges, françaises et modèles neuronaux) :</p>
 
           <div class="setting-field-group">
-            <label for="settings-voice-select" class="setting-label">Voix active :</label>
+            <label for="settings-voice-select" class="setting-label">Profil vocal actif :</label>
             <div class="voice-picker-row">
               <select id="settings-voice-select" class="custom-select">
-                <option value="fr_FR-siwis-medium">Siwis (Féminine · Standard)</option>
-                <option value="fr_FR-tom-medium">Tom (Masculine · Naturelle)</option>
-                <option value="fr_FR-mls-medium">MLS Studio (Féminine · Haute Définition)</option>
-                <option value="fr_FR-upmc-medium">UPMC (Féminine · Expressive)</option>
-                <option value="fr_FR-siwis-low">Siwis (Féminine · Rapide)</option>
-                <option value="fr_FR-gilles-low">Gilles (Masculine · Dynamique)</option>
-                <option value="fr_FR-mls_1840-low">MLS 1840 (Masculine · Légère)</option>
+                <option value="" disabled selected>Détection des voix disponibles…</option>
               </select>
               <button id="test-voice-btn" type="button" class="btn-voice-test" title="Écouter un extrait de la voix choisie">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
@@ -565,23 +579,26 @@
                 <span>Tester</span>
               </button>
             </div>
+            <div id="voice-engine-details" class="voice-engine-details">
+              Détection des voix installées en cours…
+            </div>
           </div>
 
           <div class="sliders-grid">
             <div class="slider-field">
               <div class="slider-header">
                 <span>Vitesse d'élocution</span>
-                <span id="voice-rate-label" class="slider-val">1.0x</span>
+                <span id="voice-rate-label" class="slider-val">1.00x</span>
               </div>
-              <input type="range" id="voice-rate-slider" min="0.8" max="1.4" step="0.05" value="1.0">
+              <input type="range" id="voice-rate-slider" min="0.8" max="1.3" step="0.05" value="1.0">
             </div>
 
             <div class="slider-field">
               <div class="slider-header">
-                <span>Tonalité de la voix</span>
-                <span id="voice-pitch-label" class="slider-val">1.0</span>
+                <span>Tonalité vocale</span>
+                <span id="voice-pitch-label" class="slider-val">1.00</span>
               </div>
-              <input type="range" id="voice-pitch-slider" min="0.7" max="1.3" step="0.05" value="1.0">
+              <input type="range" id="voice-pitch-slider" min="0.85" max="1.15" step="0.05" value="1.0">
             </div>
           </div>
         </div>

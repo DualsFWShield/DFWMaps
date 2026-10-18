@@ -1,6 +1,6 @@
 "use strict";
 
-const VERSION = "mon-maps-v10";
+const VERSION = "mon-maps-v17";
 const TILE_CACHE = "mon-maps-tiles";
 const MAX_TILES = 800;
 const SHELL = ["./", "index.html", "style.css", "piper-tts.js", "client-router.js", "app.js", "manifest.webmanifest", "icons/icon-192.png", "icons/icon-512.png"];
@@ -40,6 +40,8 @@ self.addEventListener("fetch", (e) => {
 
   if (isTileHost(url.hostname)) {
     e.respondWith(tile(req));
+  } else if (url.pathname.startsWith("/api/")) {
+    e.respondWith(fetch(req));
   } else if (url.origin === location.origin || LIB_HOSTS.includes(url.hostname)) {
     e.respondWith(networkFirstApp(req));
   }
