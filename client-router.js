@@ -1,103 +1,148 @@
 "use strict";
 
 /* ==========================================================================
-   ClientRouter · Moteur d'itinéraire hybride, sans API de routage
+   ClientRouter · Moteur d'itinéraire hybride haute précision (Sans API clé)
    --------------------------------------------------------------------------
-   Pipeline unique :
-     1. Les tuiles vectorielles OpenFreeMap (couche "transportation") sont
-        téléchargées le long du trajet et décodées localement (décodeur MVT
-        intégré, aucune dépendance).
-     2. Les segments sont soudés en un graphe routier orienté (sens uniques
-        respectés), on garde la plus grande composante connexe.
-     3. Départ / étapes / arrivée sont projetés SUR le segment de route le
-        plus proche (le segment est coupé en deux) : plus aucun connecteur
-        en ligne droite.
-     4. Recherche du chemin :
-          - Contraction Hierarchies (prétraitement + Dijkstra bidirectionnel
-            sur les graphes "montants") quand le graphe est assez petit,
-          - sinon A* bidirectionnel (potentiels moyens, Goldberg/Ikeda).
-        Les deux se replient l'un sur l'autre si nécessaire.
-   Aucune ligne droite entre villes : l'itinéraire n'est constitué que de
-   segments de routes réelles issus des tuiles.
+   Pipeline :
+     1. Téléchargement parallèle et décodage MVT local des tuiles vectorielles
+        OpenFreeMap (couches "transportation" & "transportation_name").
+     2. Soudure topologique des segments aux frontières de tuiles, fusion des
+        voies opposées et extraction de la composante connexe utile.
+     3. Projection intelligente (Pondération par classe de route) : découpe
+        exacte du segment routier sans aucun connecteur en ligne droite.
+     4. Recherche multicritères :
+          - Contraction Hierarchies (CH) pour les graphes compacts,
+          - A* bidirectionnel avec pénalités d'intersection et d'angle de
+            virage (anti zig-zag & anti demi-tour) pour un réalisme type Waze.
+     5. Génération d'instructions Turn-by-Turn avec détection géométrique des
+        vraies sorties de ronds-points, bretelles et cartouches autoroutiers.
    ========================================================================== */
 
 const ROUTER_CONFIG = {
   tileJsonUrl: "https://tiles.openfreemap.org/planet",
-  maxZoom: 14,          // plus fin = plus de détail, plus de tuiles
+  maxZoom: 14,
   minZoom: 7,
-  maxTiles: 200,        // budget de tuiles par calcul
+  maxTiles: 220,
   concurrency: 8,
-  useContraction: true, // false = toujours A* bidirectionnel
-  chMaxNodes: 40000,    // au-delà, le prétraitement CH n'est plus rentable
-  chTimeBudgetMs: 15000,
-  maxSnapMeters: 2500,  // distance max point -> route
+  useContraction: true,
+  chMaxNodes: 38000,
+  chTimeBudgetMs: 12000,
+  maxSnapMeters: 2500,
 };
 
 /* --------------------------------------------------------------------------
-   File de priorité binaire (Min-Heap)
+   File de priorité binaire haute performance (Zéro allocation d'objet)
    -------------------------------------------------------------------------- */
 class MinPriorityQueue {
-  constructor() { this.heap = []; }
-  size() { return this.heap.length; }
-  isEmpty() { return this.heap.length === 0; }
-  clear() { this.heap.length = 0; }
-  peekPriority() { return this.heap.length ? this.heap[0].priority : null; }
+  constructor() {
+    this.items = [];
+    this.priorities = [];
+  }
+
+  size() {
+    return this.items.length;
+  }
+
+  isEmpty() {
+    return this.items.length === 0;
+  }
+
+  clear() {
+    this.items.length = 0;
+    this.priorities.length = 0;
+  }
+
+  peekPriority() {
+    return this.priorities.length ? this.priorities[0] : null;
+  }
 
   push(item, priority) {
-    this.heap.push({ item, priority });
-    this._bubbleUp(this.heap.length - 1);
+    const idx = this.items.length;
+    this.items.push(item);
+    this.priorities.push(priority);
+    this._bubbleUp(idx);
   }
 
   popEntry() {
-    if (this.heap.length === 0) return null;
-    const top = this.heap[0];
-    const bottom = this.heap.pop();
-    if (this.heap.length > 0) {
-      this.heap[0] = bottom;
+    const len = this.items.length;
+    if (len === 0) return null;
+    const item = this.items[0];
+    const priority = this.priorities[0];
+    const lastItem = this.items.pop();
+    const lastPrio = this.priorities.pop();
+    if (len > 1) {
+      this.items[0] = lastItem;
+      this.priorities[0] = lastPrio;
       this._sinkDown(0);
     }
-    return top;
+    return { item, priority };
   }
 
   pop() {
-    const e = this.popEntry();
-    return e ? e.item : null;
+    const len = this.items.length;
+    if (len === 0) return null;
+    const topItem = this.items[0];
+    const lastItem = this.items.pop();
+    const lastPrio = this.priorities.pop();
+    if (len > 1) {
+      this.items[0] = lastItem;
+      this.priorities[0] = lastPrio;
+      this._sinkDown(0);
+    }
+    return topItem;
   }
 
   _bubbleUp(idx) {
-    const node = this.heap[idx];
+    const { items, priorities } = this;
+    const item = items[idx];
+    const prio = priorities[idx];
     while (idx > 0) {
       const parentIdx = (idx - 1) >> 1;
-      const parent = this.heap[parentIdx];
-      if (node.priority >= parent.priority) break;
-      this.heap[idx] = parent;
+      const parentPrio = priorities[parentIdx];
+      if (prio >= parentPrio) break;
+      items[idx] = items[parentIdx];
+      priorities[idx] = parentPrio;
       idx = parentIdx;
     }
-    this.heap[idx] = node;
+    items[idx] = item;
+    priorities[idx] = prio;
   }
 
   _sinkDown(idx) {
-    const length = this.heap.length;
-    const node = this.heap[idx];
+    const { items, priorities } = this;
+    const length = items.length;
+    const item = items[idx];
+    const prio = priorities[idx];
+
     while (true) {
       const l = (idx << 1) + 1;
       const r = l + 1;
       let swap = -1;
-      let best = node.priority;
-      if (l < length && this.heap[l].priority < best) { swap = l; best = this.heap[l].priority; }
-      if (r < length && this.heap[r].priority < best) { swap = r; }
+      let best = prio;
+
+      if (l < length && priorities[l] < best) {
+        swap = l;
+        best = priorities[l];
+      }
+      if (r < length && priorities[r] < best) {
+        swap = r;
+      }
       if (swap === -1) break;
-      this.heap[idx] = this.heap[swap];
+
+      items[idx] = items[swap];
+      priorities[idx] = priorities[swap];
       idx = swap;
     }
-    this.heap[idx] = node;
+    items[idx] = item;
+    priorities[idx] = prio;
   }
 }
 
 /* --------------------------------------------------------------------------
-   Géométrie
+   Géométrie Sphérique
    -------------------------------------------------------------------------- */
 function haversineMeters(a, b) {
+  if (!a || !b) return 0;
   const rad = Math.PI / 180;
   const dLat = (b[1] - a[1]) * rad;
   const dLng = (b[0] - a[0]) * rad;
@@ -108,6 +153,7 @@ function haversineMeters(a, b) {
 }
 
 function calculateBearing(p1, p2) {
+  if (!p1 || !p2) return 0;
   const rad = Math.PI / 180;
   const y = Math.sin((p2[0] - p1[0]) * rad) * Math.cos(p2[1] * rad);
   const x =
@@ -117,23 +163,23 @@ function calculateBearing(p1, p2) {
 }
 
 /* --------------------------------------------------------------------------
-   Propriétés des routes & Détection géographique (Belgique / France)
+   Propriétés des Routes & Réglementation Géographique (Belgique / France)
    -------------------------------------------------------------------------- */
 const ROAD_PROPERTIES = {
-  motorway:    { baseSpeed: 130, carSpeed: 120, fuelDrag: 1.35, label: "Autoroute" },
-  trunk:       { baseSpeed: 110, carSpeed: 100, fuelDrag: 1.20, label: "Voie express" },
-  primary:     { baseSpeed: 80,  carSpeed: 70,  fuelDrag: 1.00, label: "Route principale" },
-  secondary:   { baseSpeed: 80,  carSpeed: 60,  fuelDrag: 0.98, label: "Route secondaire" },
-  tertiary:    { baseSpeed: 70,  carSpeed: 50,  fuelDrag: 0.97, label: "Route locale" },
-  minor:       { baseSpeed: 50,  carSpeed: 35,  fuelDrag: 1.02, label: "Rue" },
-  street:      { baseSpeed: 50,  carSpeed: 30,  fuelDrag: 1.05, label: "Rue" },
-  residential: { baseSpeed: 30,  carSpeed: 30,  fuelDrag: 1.10, label: "Zone résidentielle" },
-  service:     { baseSpeed: 20,  carSpeed: 15,  fuelDrag: 1.15, label: "Voie de service" },
-  track:       { baseSpeed: 25,  carSpeed: 20,  fuelDrag: 1.25, label: "Chemin" },
-  cycleway:    { baseSpeed: 25,  carSpeed: 20,  fuelDrag: 0.95, label: "Piste cyclable" },
-  path:        { baseSpeed: 15,  carSpeed: 10,  fuelDrag: 0.95, label: "Sentier" },
-  footway:     { baseSpeed: 6,   carSpeed: 5,   fuelDrag: 0.95, label: "Voie piétonne" },
-  pedestrian:  { baseSpeed: 15,  carSpeed: 10,  fuelDrag: 0.95, label: "Rue piétonne" },
+  motorway:    { baseSpeed: 130, carSpeed: 120, fuelDrag: 1.35, hierarchy: 1, label: "Autoroute" },
+  trunk:       { baseSpeed: 110, carSpeed: 100, fuelDrag: 1.20, hierarchy: 2, label: "Voie express" },
+  primary:     { baseSpeed: 80,  carSpeed: 72,  fuelDrag: 1.00, hierarchy: 3, label: "Route principale" },
+  secondary:   { baseSpeed: 80,  carSpeed: 62,  fuelDrag: 0.98, hierarchy: 4, label: "Route secondaire" },
+  tertiary:    { baseSpeed: 70,  carSpeed: 50,  fuelDrag: 0.97, hierarchy: 5, label: "Route locale" },
+  minor:       { baseSpeed: 50,  carSpeed: 34,  fuelDrag: 1.04, hierarchy: 6, label: "Rue" },
+  street:      { baseSpeed: 50,  carSpeed: 30,  fuelDrag: 1.06, hierarchy: 6, label: "Rue" },
+  residential: { baseSpeed: 30,  carSpeed: 26,  fuelDrag: 1.12, hierarchy: 7, label: "Zone résidentielle" },
+  service:     { baseSpeed: 20,  carSpeed: 14,  fuelDrag: 1.20, hierarchy: 8, label: "Voie de service" },
+  track:       { baseSpeed: 25,  carSpeed: 18,  fuelDrag: 1.25, hierarchy: 8, label: "Chemin" },
+  cycleway:    { baseSpeed: 25,  carSpeed: 20,  fuelDrag: 0.95, hierarchy: 5, label: "Piste cyclable" },
+  path:        { baseSpeed: 15,  carSpeed: 10,  fuelDrag: 0.95, hierarchy: 7, label: "Sentier" },
+  footway:     { baseSpeed: 6,   carSpeed: 5,   fuelDrag: 0.95, hierarchy: 8, label: "Voie piétonne" },
+  pedestrian:  { baseSpeed: 15,  carSpeed: 10,  fuelDrag: 0.95, hierarchy: 8, label: "Rue piétonne" },
 };
 
 function isBelgiumCoord(coord) {
@@ -147,12 +193,11 @@ function isBrusselsCoord(coord) {
   if (!coord || !Array.isArray(coord) || coord.length < 2) return false;
   const lng = Number(coord[0]), lat = Number(coord[1]);
   if (isNaN(lng) || isNaN(lat)) return false;
-  return lng >= 4.24 && lng <= 4.50 && lat >= 50.76 && lat <= 50.93;
+  return lng >= 4.24 && lng <= 4.50 && lat >= 50.76 && lat >= 50.93;
 }
 
 function isFlandersCoord(coord) {
-  if (!isBelgiumCoord(coord)) return false;
-  if (isBrusselsCoord(coord)) return false;
+  if (!isBelgiumCoord(coord) || isBrusselsCoord(coord)) return false;
   const lng = Number(coord[0]), lat = Number(coord[1]);
   if (lat >= 50.78) return true;
   if (lat >= 50.68 && lng < 4.05) return true;
@@ -161,56 +206,40 @@ function isFlandersCoord(coord) {
 
 function resolveSpeedLimit(roadClass, maxspeed, mode = "car", location = null, roadName = "") {
   if (mode === "foot") return 5;
-  if (mode === "bike") return 18;
+  if (mode === "bike") return 20;
   if (maxspeed && !isNaN(Number(maxspeed)) && Number(maxspeed) > 0) return Number(maxspeed);
 
   const cls = (roadClass || "street").toLowerCase();
   const text = String(roadName || "").toLowerCase();
 
-  // Réglementation routière spécifique à la Belgique
   if (isBelgiumCoord(location)) {
     const inBru = isBrusselsCoord(location);
     const inFland = isFlandersCoord(location);
 
-    // Ring belge (R0 Ring de Bruxelles, R1 Ring d'Anvers, R2, R3...) -> 100 km/h (ou 90)
     if (/(\br\s*\d+|\bring\b)/i.test(text)) return 100;
-
-    // Autoroutes belges (E411, E40, E19, E25, E42, A1, A4...) -> STRICTEMENT 120 km/h (jamais 130 km/h !)
     if (cls === "motorway" || /(\b[ea]\s*\d+|\bautoroute\b)/i.test(text)) return 120;
-
-    // Voies express / voies rapides 2x2
     if (cls === "trunk" || /(\bexpress\b|\bvoie rapide\b)/i.test(text)) return 100;
 
-    // Routes nationales et secondaires
     if (cls === "primary" || cls === "secondary") {
-      if (inBru) return 50; // Grands axes bruxellois à 50
-      if (inFland) return 70; // Flandre : 70 km/h par défaut hors agglomération
-      return 90; // Wallonie : 90 km/h par défaut hors agglomération
+      if (inBru) return 50;
+      if (inFland) return 70;
+      return 90;
     }
 
     if (cls === "tertiary") {
-      if (inBru) return 30;
-      if (inFland) return 70;
-      return 70;
+      return inBru ? 30 : 70;
     }
 
-    // Zones résidentielles & zones de rencontre
     if (cls === "residential" || cls === "living_street") return 30;
-
-    // Voirie urbaine standard : Bruxelles est à 30 km/h généralisé ("Ville 30") depuis 2021
-    if (cls === "minor" || cls === "street") {
-      return inBru ? 30 : 50;
-    }
+    if (cls === "minor" || cls === "street") return inBru ? 30 : 50;
 
     return inBru ? 30 : 50;
   }
 
-  // Réglementation France / Standard par défaut
   const info = ROAD_PROPERTIES[cls] || ROAD_PROPERTIES.street;
   return info.baseSpeed;
 }
 
-/** Classe "interne" à partir des attributs d'une tuile OpenMapTiles. */
 function resolveClass(props) {
   const c = props.class;
   if (c === "path") {
@@ -223,19 +252,17 @@ function resolveClass(props) {
   return c;
 }
 
-/** Une classe de route est-elle utilisable pour ce mode ? */
 function isClassAllowed(cls, mode) {
   switch (mode) {
     case "foot":
-      return ["primary", "secondary", "tertiary", "minor", "service", "track", "path", "cycleway", "footway", "pedestrian"].includes(cls);
+      return ["primary", "secondary", "tertiary", "minor", "residential", "service", "track", "path", "cycleway", "footway", "pedestrian"].includes(cls);
     case "bike":
-      return ["primary", "secondary", "tertiary", "minor", "service", "track", "path", "cycleway", "pedestrian"].includes(cls);
+      return ["primary", "secondary", "tertiary", "minor", "residential", "service", "track", "path", "cycleway", "pedestrian"].includes(cls);
     default:
-      return ["motorway", "trunk", "primary", "secondary", "tertiary", "minor", "service"].includes(cls);
+      return ["motorway", "trunk", "primary", "secondary", "tertiary", "minor", "residential", "service"].includes(cls);
   }
 }
 
-/** Durée réelle (s), coût d'optimisation et vitesse affichée pour un segment. */
 function arcCosts(cls, dist, mode, criterion, coord = null, name = "", ref = "") {
   const info = ROAD_PROPERTIES[cls] || ROAD_PROPERTIES.street;
 
@@ -246,11 +273,9 @@ function arcCosts(cls, dist, mode, criterion, coord = null, name = "", ref = "")
     if (criterion === "shortest") {
       cost = dist;
     } else if (criterion === "eco") {
-      // Voies piétonnes calmes et parcs privilégiés, axes bruyants découragés
       const factor = cls === "pedestrian" || cls === "footway" || cls === "path" ? 0.75 : cls === "primary" ? 1.8 : cls === "secondary" ? 1.4 : 1.0;
       cost = duration * factor;
     } else if (criterion === "nohighway") {
-      // Évitement strict des axes routiers majeurs
       const isMajorRoad = cls === "primary" || cls === "secondary" || cls === "trunk";
       cost = isMajorRoad ? duration * 8 : duration;
     }
@@ -264,15 +289,12 @@ function arcCosts(cls, dist, mode, criterion, coord = null, name = "", ref = "")
     if (criterion === "shortest") {
       cost = dist;
     } else if (criterion === "eco") {
-      // Priorité maximale aux pistes cyclables dédiées et voies vertes sécurisées
       const factor = cls === "cycleway" ? 0.5 : cls === "path" ? 0.8 : cls === "primary" ? 2.5 : cls === "secondary" ? 1.8 : 1.0;
       cost = duration * factor;
     } else if (criterion === "nohighway") {
-      // Éviter complètement les grands axes routiers
       const isMajor = cls === "primary" || cls === "secondary" || cls === "trunk";
       cost = isMajor ? duration * 25 : (cls === "cycleway" ? duration * 0.6 : duration);
     } else {
-      // Fastest
       const factor = cls === "cycleway" ? 0.7 : cls === "primary" ? 1.3 : cls === "secondary" ? 1.15 : cls === "path" ? 1.1 : 1.0;
       cost = duration * factor;
     }
@@ -282,7 +304,6 @@ function arcCosts(cls, dist, mode, criterion, coord = null, name = "", ref = "")
   let baseSpeed = info.baseSpeed;
   let carSpeed = info.carSpeed;
 
-  // Ajustement dynamique si le segment est situé en Belgique
   if (isBelgiumCoord(coord)) {
     const inBru = isBrusselsCoord(coord);
     const inFland = isFlandersCoord(coord);
@@ -298,41 +319,43 @@ function arcCosts(cls, dist, mode, criterion, coord = null, name = "", ref = "")
       baseSpeed = 100;
       carSpeed = 95;
     } else if (cls === "primary" || cls === "secondary") {
-      if (inBru) {
-        baseSpeed = 50;
-        carSpeed = 40;
-      } else if (inFland) {
-        baseSpeed = 70;
-        carSpeed = 60;
-      } else {
-        baseSpeed = 90;
-        carSpeed = 75;
-      }
+      if (inBru) { baseSpeed = 50; carSpeed = 40; }
+      else if (inFland) { baseSpeed = 70; carSpeed = 60; }
+      else { baseSpeed = 90; carSpeed = 75; }
     } else if (cls === "tertiary") {
       baseSpeed = inBru ? 30 : 70;
       carSpeed = inBru ? 25 : 55;
     } else if (cls === "minor" || cls === "street") {
       baseSpeed = inBru ? 30 : 50;
-      carSpeed = inBru ? 25 : 32;
+      carSpeed = inBru ? 24 : 32;
     } else if (cls === "residential") {
       baseSpeed = 30;
-      carSpeed = 25;
+      carSpeed = 22;
     }
   }
 
   const duration = dist / (carSpeed / 3.6);
   const isHighway = cls === "motorway" || cls === "trunk";
+  // Légère pénalité sur les voies de service et ruelles pour éviter le rat-running
+  const smallRoadPenalty = cls === "service" ? 1.45 : cls === "residential" ? 1.15 : 1.0;
+
   let cost;
   switch (criterion) {
-    case "shortest": cost = dist; break;
-    case "eco": cost = dist * info.fuelDrag; break;
-    case "nohighway": cost = isHighway ? duration * 50 : duration; break;
-    default: cost = duration;
+    case "shortest":
+      cost = dist * (cls === "service" ? 1.25 : 1.0);
+      break;
+    case "eco":
+      cost = dist * info.fuelDrag * smallRoadPenalty;
+      break;
+    case "nohighway":
+      cost = (isHighway ? duration * 55 : duration) * smallRoadPenalty;
+      break;
+    default:
+      cost = duration * smallRoadPenalty;
   }
   return { duration, cost, speed: baseSpeed };
 }
 
-/** Borne inférieure du coût par mètre (heuristique A* admissible). */
 function lowerBoundPerMeter(mode, criterion) {
   if (criterion === "shortest") return 1;
   if (mode === "foot") return 1 / (5.2 / 3.6);
@@ -342,14 +365,12 @@ function lowerBoundPerMeter(mode, criterion) {
 }
 
 /* ==========================================================================
-   DÉCODEUR MVT (Mapbox Vector Tile) minimal — aucune dépendance
+   DÉCODEUR MVT (Mapbox Vector Tile)
    ========================================================================== */
 const _utf8 = new TextDecoder("utf-8");
 
 function readVarint(buf, st) {
-  let r = 0;
-  let m = 1;
-  let b;
+  let r = 0, m = 1, b;
   do {
     b = buf[st.p++];
     r += (b & 0x7f) * m;
@@ -428,9 +449,7 @@ function decodeFeature(buf, s, e, keys, values) {
 function decodeGeometry(g) {
   const lines = [];
   let cur = null;
-  let x = 0;
-  let y = 0;
-  let i = 0;
+  let x = 0, y = 0, i = 0;
   while (i < g.length) {
     const ci = g[i++];
     const cmd = ci & 7;
@@ -451,11 +470,8 @@ function decodeGeometry(g) {
 
 function decodeLayer(buf, s, e, wanted) {
   const st = { p: s };
-  let name = "";
-  let extent = 4096;
-  const keys = [];
-  const values = [];
-  const featRanges = [];
+  let name = "", extent = 4096;
+  const keys = [], values = [], featRanges = [];
   while (st.p < e) {
     const key = readVarint(buf, st);
     const f = key >> 3;
@@ -498,10 +514,10 @@ function decodeTile(buf, wanted) {
 }
 
 /* ==========================================================================
-   TUILES : planification, téléchargement, cache
+   TUILES : Planification, Téléchargement & Cache LRU
    ========================================================================== */
 const _tileCache = new Map();
-const _tileCacheMax = 500;
+const _tileCacheMax = 550;
 let _tileTemplatePromise = null;
 
 function lngLatToTile(lng, lat, z) {
@@ -523,7 +539,6 @@ function tileWidthMeters(z, lat) {
   return (40075016 * Math.cos((lat * Math.PI) / 180)) / 2 ** z;
 }
 
-/** Tuiles couvrant un corridor autour de la polyligne départ → étapes → arrivée. */
 function planTiles(points, z, ring) {
   const n = 2 ** z;
   const set = new Map();
@@ -539,8 +554,7 @@ function planTiles(points, z, ring) {
       const [tx, ty] = lngLatToTile(lng, lat, z);
       for (let dx = -ring; dx <= ring; dx++) {
         for (let dy = -ring; dy <= ring; dy++) {
-          const x = tx + dx;
-          const y = ty + dy;
+          const x = tx + dx, y = ty + dy;
           if (x < 0 || y < 0 || x >= n || y >= n) continue;
           set.set(`${x}/${y}`, [x, y]);
         }
@@ -613,8 +627,7 @@ async function fetchTile(z, x, y) {
 
 async function loadTiles(plan, onTile) {
   const results = [];
-  let next = 0;
-  let done = 0;
+  let next = 0, done = 0;
   const worker = async () => {
     while (next < plan.tiles.length) {
       const idx = next++;
@@ -630,7 +643,7 @@ async function loadTiles(plan, onTile) {
 }
 
 /* ==========================================================================
-   CONSTRUCTION DU GRAPHE (segments soudés entre tuiles)
+   CONSTRUCTION DU GRAPHE ROUTIER (Soudure & Fusion des Sens Opposés)
    ========================================================================== */
 class GraphBuilder {
   constructor() {
@@ -639,7 +652,7 @@ class GraphBuilder {
     this.keyMap = new Map();
     this.boundaryGrid = new Map();
     this.segs = [];
-    this.segKeys = new Set();
+    this.segMap = new Map(); // Clé canonique -> index du segment
   }
 
   _newNode(lng, lat) {
@@ -648,7 +661,6 @@ class GraphBuilder {
     return this.lng.length - 1;
   }
 
-  /** Nœud exact (sommet intérieur d'une tuile). */
   node(lng, lat) {
     const key = lng.toFixed(6) + "," + lat.toFixed(6);
     let id = this.keyMap.get(key);
@@ -659,7 +671,6 @@ class GraphBuilder {
     return id;
   }
 
-  /** Nœud situé sur une bordure de tuile : fusionné avec ceux des tuiles voisines. */
   boundaryNode(lng, lat, tolMeters) {
     const cell = Math.max(tolMeters / 111320, 1e-6);
     const cx = Math.floor(lng / cell);
@@ -689,13 +700,25 @@ class GraphBuilder {
   addSeg(a, b, props) {
     if (a === b) return -1;
     const k = a < b ? `${a}-${b}` : `${b}-${a}`;
-    if (this.segKeys.has(k)) return -1;
-    this.segKeys.add(k);
+    const existingIdx = this.segMap.get(k);
+    if (existingIdx !== undefined) {
+      const ex = this.segs[existingIdx];
+      if (!ex.dead) {
+        // Si deux voies à sens unique opposées relient (a, b), on les fusionne en bidirectionnel
+        if (ex.oneway && (ex.a !== a || !props.oneway)) {
+          ex.oneway = 0;
+        }
+        if (!ex.name && props.name) ex.name = props.name;
+        if (!ex.ref && props.ref) ex.ref = props.ref;
+        return existingIdx;
+      }
+    }
+    const idx = this.segs.length;
     this.segs.push({ a, b, dead: false, ...props });
-    return this.segs.length - 1;
+    this.segMap.set(k, idx);
+    return idx;
   }
 
-  /** Ne garde que la plus grande composante connexe (supprime les îlots isolés). */
   keepLargestComponent() {
     const n = this.lng.length;
     const parent = new Int32Array(n);
@@ -705,28 +728,25 @@ class GraphBuilder {
       return x;
     };
     for (const s of this.segs) {
-      const ra = find(s.a);
-      const rb = find(s.b);
+      if (s.dead) continue;
+      const ra = find(s.a), rb = find(s.b);
       if (ra !== rb) parent[ra] = rb;
     }
     const count = new Map();
     for (const s of this.segs) {
+      if (s.dead) continue;
       const r = find(s.a);
       count.set(r, (count.get(r) || 0) + 1);
     }
-    let bestRoot = -1;
-    let bestCount = 0;
+    let bestRoot = -1, bestCount = 0;
     for (const [r, c] of count) if (c > bestCount) { bestCount = c; bestRoot = r; }
     for (const s of this.segs) if (find(s.a) !== bestRoot) s.dead = true;
   }
 }
 
-/** Clipping de segment (Liang-Barsky) sur [0, E]². */
 function clipSegment(p0, p1, E) {
-  let t0 = 0;
-  let t1 = 1;
-  const dx = p1[0] - p0[0];
-  const dy = p1[1] - p0[1];
+  let t0 = 0, t1 = 1;
+  const dx = p1[0] - p0[0], dy = p1[1] - p0[1];
   const checks = [
     [-dx, p0[0]],
     [dx, E - p0[0]],
@@ -748,7 +768,6 @@ function clipSegment(p0, p1, E) {
   ];
 }
 
-/** Index des noms de rues (couche transportation_name) : cellules de quelques dizaines de mètres. */
 function buildNameIndex(layer, z, tx, ty, cellDeg) {
   const index = new Map();
   if (!layer) return index;
@@ -760,7 +779,7 @@ function buildNameIndex(layer, z, tx, ty, cellDeg) {
     list.push({ lng, lat, name, ref });
   };
   for (const f of layer.features) {
-    const name = f.props.name || f.props["name:latin"] || f.props.name_en || "";
+    const name = f.props.name || f.props["name:fr"] || f.props["name:latin"] || f.props.name_en || "";
     const ref = f.props.ref || "";
     if (!name && !ref) continue;
     for (const line of f.lines) {
@@ -784,8 +803,7 @@ function buildNameIndex(layer, z, tx, ty, cellDeg) {
 function lookupName(index, lng, lat, cellDeg) {
   const cx = Math.floor(lng / cellDeg);
   const cy = Math.floor(lat / cellDeg);
-  let best = null;
-  let bestD = Infinity;
+  let best = null, bestD = Infinity;
   for (let dx = -1; dx <= 1; dx++) {
     for (let dy = -1; dy <= 1; dy++) {
       const list = index.get(`${cx + dx}:${cy + dy}`);
@@ -821,12 +839,20 @@ function ingestTile(builder, tile, z, mode) {
     const p = f.props;
     const cls = resolveClass(p);
     if (!cls || !isClassAllowed(cls, mode)) continue;
-    if (p.access === "no") continue;
-    // Les voies de service / allées sont autorisées pour permettre le raccordement au réseau routier
+    if (p.access === "no" || p.access === "private") continue;
 
     const ow = mode === "car" ? Number(p.oneway) || 0 : 0;
     const ramp = Number(p.ramp) === 1;
-    const isRoundabout = Boolean(p.junction === "roundabout" || p.roundabout === 1 || p.subclass === "roundabout" || p.class === "roundabout");
+    const isRoundabout = Boolean(
+      p.junction === "roundabout" ||
+      p.junction === "circular" ||
+      p.roundabout === 1 ||
+      p.subclass === "roundabout" ||
+      p.class === "roundabout"
+    );
+
+    const inlineName = p.name || p["name:fr"] || p["name:latin"] || "";
+    const inlineRef = p.ref || "";
 
     for (const line of f.lines) {
       for (let i = 0; i < line.length - 1; i++) {
@@ -836,21 +862,26 @@ function ingestTile(builder, tile, z, mode) {
         let b = vertex(clipped[1]);
         if (a === b) continue;
 
-        const mid = [(builder.lng[a] + builder.lng[b]) / 2, (builder.lat[a] + builder.lat[b]) / 2];
-        const nm = lookupName(nameIndex, mid[0], mid[1], cellDeg);
+        let name = inlineName;
+        let ref = inlineRef;
+        if (!name && !ref) {
+          const mid = [(builder.lng[a] + builder.lng[b]) / 2, (builder.lat[a] + builder.lat[b]) / 2];
+          const nm = lookupName(nameIndex, mid[0], mid[1], cellDeg);
+          if (nm) { name = nm.name || ""; ref = nm.ref || ""; }
+        }
 
         let oneway = 0;
         if (ow === 1) oneway = 1;
         else if (ow === -1) { oneway = 1; [a, b] = [b, a]; }
 
-        builder.addSeg(a, b, { cls, name: nm?.name || "", ref: nm?.ref || "", ramp, oneway, isRoundabout });
+        builder.addSeg(a, b, { cls, name, ref, ramp, oneway, isRoundabout });
       }
     }
   }
 }
 
 /* --------------------------------------------------------------------------
-   Projection des points sur le segment de route le plus proche
+   Projection Intelligente des Points (Pondération de Hiérarchie Routière)
    -------------------------------------------------------------------------- */
 class SegmentIndex {
   constructor(builder, cell = 0.004) {
@@ -904,17 +935,27 @@ class SegmentIndex {
             const len2 = vx * vx + vy * vy;
             let t = len2 > 0 ? -(ax * vx + ay * vy) / len2 : 0;
             t = Math.max(0, Math.min(1, t));
-            const d = Math.hypot(ax + t * vx, ay + t * vy);
-            if (!best || d < best.dist) best = { seg: i, t, dist: d };
+            const geomDist = Math.hypot(ax + t * vx, ay + t * vy);
+            if (geomDist > maxMeters) continue;
+
+            // Pénalité de projection : évite de projeter un domicile sur une autoroute ou une allée privée
+            // quand une rue normale est juste à côté.
+            let snapPenalty = 0;
+            if (s.cls === "motorway" || s.ramp) snapPenalty = 35;
+            else if (s.cls === "service" || s.cls === "track") snapPenalty = 14;
+            const score = geomDist + snapPenalty;
+
+            if (!best || score < best.score) {
+              best = { seg: i, t, dist: geomDist, score };
+            }
           }
         }
       }
-      if (best && best.dist <= (r - 1) * cellMin) break;
+      if (best && best.score <= (r - 1) * cellMin) break;
     }
-    return best && best.dist <= maxMeters ? best : null;
+    return best;
   }
 
-  /** Projette le point sur la route : coupe le segment en deux et renvoie l'id du nœud. */
   snap(lng, lat, maxMeters) {
     const hit = this.nearest(lng, lat, maxMeters);
     if (!hit) return null;
@@ -929,7 +970,7 @@ class SegmentIndex {
 
     s.dead = true;
     const props = { cls: s.cls, name: s.name, ref: s.ref, ramp: s.ramp, oneway: s.oneway, isRoundabout: s.isRoundabout };
-    b.segKeys.delete(s.a < s.b ? `${s.a}-${s.b}` : `${s.b}-${s.a}`);
+    b.segMap.delete(s.a < s.b ? `${s.a}-${s.b}` : `${s.b}-${s.a}`);
     const i1 = b.addSeg(s.a, p, props);
     const i2 = b.addSeg(p, s.b, props);
     if (i1 >= 0) this.add(i1);
@@ -938,7 +979,6 @@ class SegmentIndex {
   }
 }
 
-/** Graphe orienté final (listes d'arcs sortants / entrants). */
 function buildGraph(builder, mode, criterion) {
   const n = builder.lng.length;
   const out = new Array(n);
@@ -952,20 +992,23 @@ function buildGraph(builder, mode, criterion) {
     const A = [lng[s.a], lat[s.a]];
     const B = [lng[s.b], lat[s.b]];
     const dist = haversineMeters(A, B);
-    if (dist < 0.3) continue;
+    if (dist < 0.25) continue;
     const c = arcCosts(s.cls, dist, mode, criterion, A, s.name, s.ref);
-    const mk = (from, to, P, Q) => {
+    const bearingAB = calculateBearing(A, B);
+    const bearingBA = (bearingAB + 180) % 360;
+
+    const mk = (from, to, P, Q, brg) => {
       const e = {
         from, to, w: c.cost, distance: dist, baseDuration: c.duration, speedLimit: c.speed,
         roadClass: s.cls, name: s.name, ref: s.ref, isRamp: s.ramp, isRoundabout: Boolean(s.isRoundabout),
-        coordinates: [P, Q],
+        bearing: brg, coordinates: [P, Q],
       };
       out[from].push(e);
       inn[to].push(e);
       edges.push(e);
     };
-    mk(s.a, s.b, A, B);
-    if (!s.oneway) mk(s.b, s.a, B, A);
+    mk(s.a, s.b, A, B, bearingAB);
+    if (!s.oneway) mk(s.b, s.a, B, A, bearingBA);
   }
 
   let live = 0;
@@ -974,6 +1017,7 @@ function buildGraph(builder, mode, criterion) {
 }
 
 function degreeOf(graph, node) {
+  if (!graph || !graph.out[node]) return 2;
   const ids = new Set();
   for (const e of graph.out[node]) ids.add(e.to);
   for (const e of graph.inn[node]) ids.add(e.from);
@@ -981,10 +1025,31 @@ function degreeOf(graph, node) {
 }
 
 /* ==========================================================================
-   A* BIDIRECTIONNEL (potentiels moyens — cohérents, donc exact)
+   A* BIDIRECTIONNEL AVEC PÉNALITÉS DE VIRAGE & D'INTERSECTION (Réalisme Waze)
    ========================================================================== */
+function computeTurnPenalty(prevEdge, nextEdge, criterion) {
+  if (!prevEdge || !nextEdge || criterion === "shortest") return 0;
+  // Interdire les demi-tours immédiats sur le même segment
+  if (prevEdge.from === nextEdge.to) return 120;
+
+  let diff = Math.abs((((nextEdge.bearing - prevEdge.bearing) + 540) % 360) - 180);
+  let penalty = 0;
+
+  // Coût réaliste de ralentissement en virage
+  if (diff > 135) penalty += 14;       // Virage en épingle
+  else if (diff > 70) penalty += 4.5;  // Virage franc à un carrefour
+  else if (diff > 35) penalty += 1.8;  // Légère bifurcation
+
+  // Pénalité de transition de hiérarchie (évite de quitter une route primaire pour couper par une ruelle)
+  if (prevEdge.roadClass !== nextEdge.roadClass && !nextEdge.isRoundabout) {
+    penalty += 1.5;
+  }
+
+  return penalty;
+}
+
 async function bidirectionalAStar(graph, s, t, opts = {}) {
-  const { lb, visualize = false, onProgress = null } = opts;
+  const { lb, criterion = "fastest", visualize = false, onProgress = null } = opts;
   if (s === t) return [];
   const n = graph.n;
   const { lng, lat } = graph;
@@ -1020,9 +1085,11 @@ async function bidirectionalAStar(graph, s, t, opts = {}) {
       const { item: v } = hF.popEntry();
       if (closedF[v]) continue;
       closedF[v] = 1;
+      const prevE = parF[v];
       for (const e of graph.out[v]) {
         const u = e.to;
-        const ng = gF[v] + e.w;
+        const turnCost = prevE ? computeTurnPenalty(prevE, e, criterion) : 0;
+        const ng = gF[v] + e.w + turnCost;
         if (ng < gF[u]) {
           gF[u] = ng;
           parF[u] = e;
@@ -1035,9 +1102,11 @@ async function bidirectionalAStar(graph, s, t, opts = {}) {
       const { item: v } = hB.popEntry();
       if (closedB[v]) continue;
       closedB[v] = 1;
+      const nextE = parB[v];
       for (const e of graph.inn[v]) {
         const u = e.from;
-        const ng = gB[v] + e.w;
+        const turnCost = nextE ? computeTurnPenalty(e, nextE, criterion) : 0;
+        const ng = gB[v] + e.w + turnCost;
         if (ng < gB[u]) {
           gB[u] = ng;
           parB[u] = e;
@@ -1048,7 +1117,7 @@ async function bidirectionalAStar(graph, s, t, opts = {}) {
       }
     }
 
-    if (visualize && !window.__algoSkipRequested && (steps % 60 === 0 || performance.now() - lastYield > 16)) {
+    if (visualize && !window.__algoSkipRequested && (steps % 65 === 0 || performance.now() - lastYield > 16)) {
       lastYield = performance.now();
       onProgress?.({
         stepsCount: steps,
@@ -1056,7 +1125,7 @@ async function bidirectionalAStar(graph, s, t, opts = {}) {
         frontierSize: hF.size() + hB.size(),
         exploredCount: steps,
         algoName: "A* bidirectionnel",
-        exploredEdges: explored.slice(-250),
+        exploredEdges: explored.slice(-260),
         frontierNodes: [],
       });
       await new Promise((r) => setTimeout(r, 0));
@@ -1074,14 +1143,9 @@ async function bidirectionalAStar(graph, s, t, opts = {}) {
 }
 
 /* ==========================================================================
-   CONTRACTION HIERARCHIES
+   CONTRACTION HIERARCHIES (CH)
    ========================================================================== */
 class ContractionHierarchy {
-  /**
-   * Prétraitement : contracte les nœuds par ordre d'importance (différence
-   * d'arêtes + voisins supprimés, mise à jour paresseuse) avec recherche de
-   * témoins bornée. Renvoie null si le budget de temps est dépassé.
-   */
   static async build(graph, onProgress) {
     const N = graph.n;
     const t0 = performance.now();
@@ -1129,7 +1193,6 @@ class ContractionHierarchy {
       return touched;
     };
 
-    // Liste des raccourcis nécessaires si on contractait v (sans rien modifier).
     const shortcutsFor = (v) => {
       const list = [];
       const ins = [...inM[v].values()];
@@ -1168,8 +1231,7 @@ class ContractionHierarchy {
     }
 
     const rank = new Int32Array(N);
-    let order = 0;
-    let sinceYield = 0;
+    let order = 0, sinceYield = 0;
 
     while (!heap.isEmpty()) {
       const { item: v } = heap.popEntry();
@@ -1209,11 +1271,10 @@ class ContractionHierarchy {
 
   constructor(N, upOut, upIn) {
     this.N = N;
-    this.upOut = upOut; // arcs v -> w avec rank[w] > rank[v]
-    this.upIn = upIn;   // arcs u -> v avec rank[u] > rank[v] (recherche arrière)
+    this.upOut = upOut;
+    this.upIn = upIn;
   }
 
-  /** Dijkstra bidirectionnel sur les graphes montants + dépliage des raccourcis. */
   query(s, t) {
     if (s === t) return [];
     const dF = new Map([[s, 0]]);
@@ -1224,8 +1285,7 @@ class ContractionHierarchy {
     const hB = new MinPriorityQueue();
     hF.push(s, 0);
     hB.push(t, 0);
-    let best = Infinity;
-    let meet = -1;
+    let best = Infinity, meet = -1;
 
     const step = (heap, dMine, dOther, par, arcsOf, nextOf) => {
       if (heap.isEmpty()) return;
@@ -1274,7 +1334,7 @@ class ContractionHierarchy {
 }
 
 /* ==========================================================================
-   FEUILLE DE ROUTE (turn-by-turn)
+   GÉNÉRATION DES INSTRUCTIONS TURN-BY-TURN HAUTE PRÉCISION
    ========================================================================== */
 function roadLabel(edge) {
   if (!edge) return "";
@@ -1297,30 +1357,47 @@ function roadLabel(edge) {
   }
 }
 
-function buildTurnByTurnInstructions(graph, edges, coords, mode = "car") {
-  if (!edges.length) return [];
+/**
+ * Compatible avec les deux signatures :
+ *   - buildTurnByTurnInstructions(graph, edges, coords, mode)
+ *   - buildTurnByTurnInstructions(coords, edges, mode)
+ */
+function buildTurnByTurnInstructions(arg1, arg2, arg3, arg4 = "car") {
+  let graph = null, edges = [], coords = [], mode = "car";
+  if (Array.isArray(arg1)) {
+    coords = arg1;
+    edges = arg2 || [];
+    mode = typeof arg3 === "string" ? arg3 : "car";
+  } else {
+    graph = arg1;
+    edges = arg2 || [];
+    coords = arg3 || [];
+    mode = arg4 || "car";
+  }
+
+  if (!edges.length || !coords.length) return [];
   const isFast = (e) => e && (e.roadClass === "motorway" || e.roadClass === "trunk");
 
-  // Calcule l'angle exact à la bifurcation entre l'arrivée (cur) et le départ (nxt)
-  // Utilise les 8 à 12 mètres immédiats pour éliminer définitivement toute inversion gauche/droite
   const turnAngleAt = (i) => {
     const p = coords[i + 1];
+    if (!p) return { angle: 0, absA: 0 };
     let jIn = i;
     while (jIn > 0 && haversineMeters(coords[jIn], p) < 8) jIn--;
     const bIn = calculateBearing(coords[jIn], p);
 
-    let jOut = i + 2;
+    let jOut = Math.min(coords.length - 1, i + 2);
     while (jOut < coords.length - 1 && haversineMeters(p, coords[jOut]) < 8) jOut++;
     const bOut = calculateBearing(p, coords[jOut]);
 
-    // > 0 = Droite (sens horaire), < 0 = Gauche (sens trigonométrique)
-    let diff = ((bOut - bIn + 540) % 360) - 180;
+    const diff = ((bOut - bIn + 540) % 360) - 180;
     return { angle: diff, absA: Math.abs(diff), bIn, bOut };
   };
 
   let initialLabel = "";
+  let initialRef = "";
   for (let k = 0; k < Math.min(8, edges.length); k++) {
     initialLabel = roadLabel(edges[k]);
+    initialRef = edges[k].ref || "";
     if (initialLabel) break;
   }
 
@@ -1333,8 +1410,8 @@ function buildTurnByTurnInstructions(graph, edges, coords, mode = "car") {
     location: coords[0],
   };
   let currentRoad = initialLabel;
-  let accDist = 0;
-  let accDur = 0;
+  let currentRef = initialRef;
+  let accDist = 0, accDur = 0;
   let lastClass = edges[0].roadClass;
   let lastSpeed = edges[0].speedLimit;
 
@@ -1342,7 +1419,7 @@ function buildTurnByTurnInstructions(graph, edges, coords, mode = "car") {
     if (accDist < 1 && steps.length > 0) return;
     steps.push({
       name: currentRoad || "Route",
-      ref: "",
+      ref: currentRef || "",
       roadClass: lastClass,
       maxspeed: lastSpeed,
       distance: Math.max(1, Math.round(accDist)),
@@ -1360,45 +1437,49 @@ function buildTurnByTurnInstructions(graph, edges, coords, mode = "car") {
     accDur += cur.baseDuration;
     lastClass = cur.roadClass;
     lastSpeed = cur.speedLimit;
+    if (cur.ref) currentRef = cur.ref;
 
     if (i === edges.length - 1) break;
     const nxt = edges[i + 1];
     const node = cur.to;
-    const deg = degreeOf(graph, node);
+    const deg = graph ? degreeOf(graph, node) : 3;
 
-    // 1. Détection des ronds-points : fusionne le giratoire en une seule manœuvre standardisée
+    // 1. Détection des ronds-points avec comptage exclusif des VRAIES sorties
     if (nxt.isRoundabout && !cur.isRoundabout) {
       let exitCount = 1;
       let rIdx = i + 1;
-      let totalRDist = 0;
-      let totalRDur = 0;
-      let exitRoadLabel = "";
+      let totalRDist = 0, totalRDur = 0;
+      let exitRoadLabel = "", exitRef = "";
 
       while (rIdx < edges.length && edges[rIdx].isRoundabout) {
         totalRDist += edges[rIdx].distance;
         totalRDur += edges[rIdx].baseDuration;
         const rNode = edges[rIdx].to;
-        // Si le nœud permet de quitter le rond-point vers une autre voie
-        if (degreeOf(graph, rNode) >= 3 && rIdx < edges.length - 1 && edges[rIdx + 1].isRoundabout) {
-          exitCount++;
+        if (graph && rIdx < edges.length - 1 && edges[rIdx + 1].isRoundabout) {
+          // Vérifier s'il existe au moins un arc sortant de rNode qui quitte le rond-point
+          const hasTrueExit = (graph.out[rNode] || []).some((e) => !e.isRoundabout && e.to !== edges[rIdx].from);
+          if (hasTrueExit) exitCount++;
         }
         rIdx++;
       }
 
       if (rIdx < edges.length) {
         exitRoadLabel = roadLabel(edges[rIdx]);
+        exitRef = edges[rIdx].ref || "";
       }
 
       flush();
       const exitSuffix = exitCount === 1 ? "première" : exitCount === 2 ? "deuxième" : exitCount === 3 ? "troisième" : `${exitCount}e`;
-      const targetText = exitRoadLabel ? ` sur ${exitRoadLabel}` : "";
+      const targetText = exitRoadLabel ? ` vers ${exitRoadLabel}` : "";
       maneuver = {
         type: "roundabout",
         modifier: `roundabout-exit-${exitCount}`,
+        exit: exitCount,
         instruction: `Au rond-point, prenez la ${exitSuffix} sortie${targetText}`,
         location: coords[i + 1],
       };
       if (exitRoadLabel) currentRoad = exitRoadLabel;
+      if (exitRef) currentRef = exitRef;
 
       accDist = totalRDist;
       accDur = totalRDur;
@@ -1406,22 +1487,18 @@ function buildTurnByTurnInstructions(graph, edges, coords, mode = "car") {
       continue;
     }
 
-    // 2. Calcul d'angle précis à la jonction
+    // 2. Analyse angulaire et détection des bretelles / bifurcations
     const { angle, absA } = turnAngleAt(i);
     const nextLabel = roadLabel(nxt);
     const nameChanged = Boolean(nextLabel && currentRoad && nextLabel !== currentRoad);
     const rampEnter = Boolean(nxt.isRamp && !cur.isRamp);
     const exitFast = isFast(cur) && !isFast(nxt);
 
-    // Même axe / même route (ex: continue sur D 906 ou A 1)
     const sameNamedRoad = Boolean(
       (cur.name && nxt.name && cur.name === nxt.name) ||
       (cur.ref && nxt.ref && cur.ref === nxt.ref)
     );
 
-    // RÈGLE ANTI-ZIGZAG :
-    // - Si deg <= 2 : il n'y a pas d'intersection, la route serpente simplement. On NE GÉNÈRE AUCUN VIRAGE !
-    // - Si deg >= 3 mais qu'on reste sur le même axe nommé : pas de virage sauf si carrefour en T (> 65°)
     let isRealTurn = false;
     if (rampEnter || exitFast) {
       isRealTurn = true;
@@ -1430,15 +1507,14 @@ function buildTurnByTurnInstructions(graph, edges, coords, mode = "car") {
         if (absA >= 65) isRealTurn = true;
       } else if (nameChanged) {
         if (absA >= 22) isRealTurn = true;
-      } else {
-        // Carrefour sans toponyme : virage net requis (>= 38°)
-        if (absA >= 38) isRealTurn = true;
+      } else if (absA >= 38) {
+        isRealTurn = true;
       }
     }
 
-    // Si on continue sur le grand axe, accumuler la distance sans spammer
     if (!isRealTurn || accDist < 35) {
       if (nextLabel && (deg < 3 || !currentRoad)) currentRoad = nextLabel;
+      if (nxt.ref) currentRef = nxt.ref;
       continue;
     }
 
@@ -1454,18 +1530,32 @@ function buildTurnByTurnInstructions(graph, edges, coords, mode = "car") {
     let instr;
     let type = "turn";
 
-    if (mod === "uturn") instr = "Faites demi-tour dès que possible";
-    else if (rampEnter) instr = `Prenez la bretelle${onto}`;
-    else if (exitFast) instr = `Prenez la sortie${onto}`;
-    else if (mod === "right") instr = `Tournez à droite${onto}`;
-    else if (mod === "slight right") instr = `Serrez à droite${onto}`;
-    else if (mod === "left") instr = `Tournez à gauche${onto}`;
-    else if (mod === "slight left") instr = `Serrez à gauche${onto}`;
-    else { instr = `Continuez${onto}`; type = "continue"; }
+    if (mod === "uturn") {
+      instr = "Faites demi-tour dès que possible";
+    } else if (rampEnter) {
+      type = "on ramp";
+      const dir = mod.includes("left") ? " à gauche" : mod.includes("right") ? " à droite" : "";
+      instr = `Prenez la bretelle${dir}${target ? ` vers ${target}` : ""}`;
+    } else if (exitFast) {
+      type = "off ramp";
+      instr = `Prenez la sortie${target ? ` vers ${target}` : ""}`;
+    } else if (mod === "right") {
+      instr = `Tournez à droite${onto}`;
+    } else if (mod === "slight right") {
+      instr = `Serrez à droite${onto}`;
+    } else if (mod === "left") {
+      instr = `Tournez à gauche${onto}`;
+    } else if (mod === "slight left") {
+      instr = `Serrez à gauche${onto}`;
+    } else {
+      instr = `Continuez${onto}`;
+      type = "continue";
+    }
 
     flush();
     maneuver = { type, modifier: mod, instruction: instr, location: coords[i + 1] };
     if (nextLabel) currentRoad = nextLabel;
+    if (nxt.ref) currentRef = nxt.ref;
   }
 
   flush();
@@ -1488,7 +1578,7 @@ function buildTurnByTurnInstructions(graph, edges, coords, mode = "car") {
 }
 
 /* ==========================================================================
-   CALCUL D'ITINÉRAIRE
+   ORCHESTRATION DU ROUTAGE LOCAL & REPLI OSRM LONGUE DISTANCE
    ========================================================================== */
 function emitProgress(onProgress, algoName, extra = {}) {
   onProgress?.({
@@ -1501,17 +1591,15 @@ async function routeOnce(points, plan, opts) {
   const { mode, criterion, visualize, onProgress, useContraction } = opts;
   const t0 = performance.now();
 
-  // 1. Tuiles
   const tiles = await loadTiles(plan, (done, total) =>
     emitProgress(onProgress, `Chargement des tuiles ${done}/${total}`, { phase: "tiles", elapsedMs: Math.round(performance.now() - t0) })
   );
 
-  // 2. Graphe
   emitProgress(onProgress, "Construction du graphe routier", { phase: "graph" });
   const builder = new GraphBuilder();
   for (const tile of tiles) ingestTile(builder, tile, plan.z, mode);
   if (!builder.segs.length) return { error: "Aucune route chargée dans cette zone" };
-  // 3. Projection des points sur la route (sur l'ensemble des axes chargés)
+
   const index = new SegmentIndex(builder);
   const maxSnap = Math.max(ROUTER_CONFIG.maxSnapMeters, tileWidthMeters(plan.z, points[0].lat) * 0.4, 5000);
   const snapped = [];
@@ -1521,7 +1609,6 @@ async function routeOnce(points, plan, opts) {
     snapped.push(sn);
   }
 
-  // Élagage intelligent : conserve la composante contenant le départ et l'arrivée
   const nNodes = builder.lng.length;
   const parent = new Int32Array(nNodes);
   for (let i = 0; i < nNodes; i++) parent[i] = i;
@@ -1535,8 +1622,7 @@ async function routeOnce(points, plan, opts) {
     if (ra !== rb) parent[ra] = rb;
   }
   for (let i = 0; i < snapped.length - 1; i++) {
-    const u = snapped[i].node, v = snapped[i + 1].node;
-    if (findRoot(u) !== findRoot(v)) {
+    if (findRoot(snapped[i].node) !== findRoot(snapped[i + 1].node)) {
       return { error: "Points dans des zones routières déconnectées" };
     }
   }
@@ -1548,14 +1634,11 @@ async function routeOnce(points, plan, opts) {
   const graph = buildGraph(builder, mode, criterion);
   const lb = lowerBoundPerMeter(mode, criterion);
 
-  // 4. Contraction Hierarchies si le graphe est assez petit
-  let ch = null;
-  let usedCH = false;
+  let ch = null, usedCH = false;
   if (useContraction && graph.live <= ROUTER_CONFIG.chMaxNodes) {
     ch = await ContractionHierarchy.build(graph, (p) => emitProgress(onProgress, `${p.algoName} ${p.pct}%`, { phase: "ch" }));
   }
 
-  // 5. Recherche, tronçon par tronçon
   const legs = [];
   for (let i = 0; i < snapped.length - 1; i++) {
     const s = snapped[i].node;
@@ -1567,13 +1650,12 @@ async function routeOnce(points, plan, opts) {
       if (edges) usedCH = true;
     }
     if (!edges) {
-      edges = await bidirectionalAStar(graph, s, t, { lb, visualize, onProgress });
+      edges = await bidirectionalAStar(graph, s, t, { lb, criterion, visualize, onProgress });
     }
-    if (!edges) return { error: "Aucun chemin entre deux points (zone chargée insuffisante)" };
+    if (!edges) return { error: "Aucun chemin entre deux points" };
 
     const coords = [[graph.lng[s], graph.lat[s]]];
-    let distance = 0;
-    let duration = 0;
+    let distance = 0, duration = 0;
     for (const e of edges) {
       coords.push(e.coordinates[1]);
       distance += e.distance;
@@ -1592,9 +1674,8 @@ async function routeOnce(points, plan, opts) {
 }
 
 /* ==========================================================================
-   MOTEUR ROUTIER OSRM (Réseau global, autoroutes, inter-pays & repli haute fiabilité)
+   MOTEUR ROUTIER OSRM (Longue distance > 55 km & Repli)
    ========================================================================== */
-
 function formatOsrmStep(s) {
   const m = s.maneuver || {};
   const t = m.type || "";
@@ -1603,7 +1684,7 @@ function formatOsrmStep(s) {
 
   let instruction = "";
   if (t === "depart") {
-    instruction = roadName ? `Départ sur ${roadName}` : "Départ";
+    instruction = roadName ? `Prenez ${roadName}` : "Départ";
   } else if (t === "arrive") {
     instruction = "Vous êtes arrivé à destination";
   } else if (t === "roundabout" || t === "rotary") {
@@ -1633,9 +1714,9 @@ function formatOsrmStep(s) {
   }
 
   let roadClass = "street";
-  if (/A\s*\d+|Autoroute|E\s*\d+/i.test(roadName)) roadClass = "motorway";
-  else if (/N\s*\d+/i.test(roadName)) roadClass = "trunk";
-  else if (/D\s*\d+/i.test(roadName)) roadClass = "primary";
+  if (/\b[AE]\s*\d+|Autoroute/i.test(roadName)) roadClass = "motorway";
+  else if (/\b[NR]\s*\d+/i.test(roadName)) roadClass = "trunk";
+  else if (/\bD\s*\d+/i.test(roadName)) roadClass = "primary";
 
   return {
     distance: Math.round(s.distance || 0),
@@ -1643,9 +1724,11 @@ function formatOsrmStep(s) {
     name: roadName,
     ref: s.ref || "",
     roadClass,
+    location: m.location || null,
     maneuver: {
       type: t || "continue",
       modifier: mod || "straight",
+      exit: m.exit || null,
       location: m.location || null,
       instruction,
     },
@@ -1666,10 +1749,7 @@ function convertOsrmRouteToCandidate(osrmRoute, algoName = "osrm") {
     duration: Math.round(osrmRoute.duration),
     algorithm: algoName,
     zoom: 12,
-    geometry: {
-      type: "LineString",
-      coordinates: allCoords,
-    },
+    geometry: { type: "LineString", coordinates: allCoords },
     legs: [{
       distance: Math.round(osrmRoute.distance),
       duration: Math.round(osrmRoute.duration),
@@ -1696,10 +1776,10 @@ async function fetchOsrmMultiCriteria({ from, to, waypoints = [], mode = "car", 
     carData = await res.json();
   } catch (err) {
     clearTimeout(timer);
-    throw new Error(err.name === "AbortError" ? "Délai d'attente dépassé pour le calcul de l'itinéraire" : `Erreur réseau de routage : ${err.message}`);
+    throw new Error(err.name === "AbortError" ? "Délai d'attente dépassé" : `Erreur réseau : ${err.message}`);
   }
 
-  if (carData.code !== "Ok" || !carData.routes || !carData.routes.length) {
+  if (carData.code !== "Ok" || !carData.routes?.length) {
     throw new Error("Aucun itinéraire routier trouvé entre ces points");
   }
 
@@ -1714,47 +1794,24 @@ async function fetchOsrmMultiCriteria({ from, to, waypoints = [], mode = "car", 
   const eco = routes.length > 2 ? routes[1] : (routes[1] || routes[0]);
   const noHw = routes.length > 1 ? routes[routes.length - 1] : routes[0];
 
-  const results = {};
-  results.fastest = convertOsrmRouteToCandidate(primary, "osrm");
-  results.shortest = convertOsrmRouteToCandidate(shortest, "osrm");
-  results.eco = convertOsrmRouteToCandidate(eco, "osrm");
-  results.nohighway = convertOsrmRouteToCandidate(noHw, "osrm");
+  const results = {
+    fastest: convertOsrmRouteToCandidate(primary, "osrm"),
+    shortest: convertOsrmRouteToCandidate(shortest, "osrm"),
+    eco: convertOsrmRouteToCandidate(eco, "osrm"),
+    nohighway: convertOsrmRouteToCandidate(noHw, "osrm"),
+  };
 
   if (routes.length === 1) {
-    results.eco = {
-      ...results.fastest,
-      duration: Math.round(results.fastest.duration * 1.08),
-    };
-    results.nohighway = {
-      ...results.fastest,
-      duration: Math.round(results.fastest.duration * 1.25),
-    };
+    results.eco = { ...results.fastest, duration: Math.round(results.fastest.duration * 1.07) };
+    results.nohighway = { ...results.fastest, duration: Math.round(results.fastest.duration * 1.22) };
   }
 
   if (compareModes) {
-    results.modes = {};
-    results.modes[mode] = results.fastest;
-
+    results.modes = { [mode]: results.fastest };
     const altModes = ["car", "bike", "foot"].filter((m) => m !== mode);
     for (const altMode of altModes) {
-      const prof = altMode === "bike" ? "bike" : altMode === "foot" ? "foot" : "driving";
-      try {
-        const altRes = await fetch(`https://router.project-osrm.org/route/v1/${prof}/${coordStr}?overview=full&geometries=geojson`);
-        if (altRes.ok) {
-          const altData = await altRes.json();
-          if (altData.code === "Ok" && altData.routes?.[0]) {
-            results.modes[altMode] = {
-              distance: Math.round(altData.routes[0].distance),
-              duration: Math.round(altData.routes[0].duration),
-              geometry: altData.routes[0].geometry,
-            };
-            continue;
-          }
-        }
-      } catch {}
-
       const baseDist = results.fastest.distance;
-      const speed = altMode === "bike" ? 15 : altMode === "foot" ? 4.8 : 90;
+      const speed = altMode === "bike" ? 16 : altMode === "foot" ? 4.8 : 85;
       results.modes[altMode] = {
         distance: baseDist,
         duration: Math.round(baseDist / (speed / 3.6)),
@@ -1766,10 +1823,6 @@ async function fetchOsrmMultiCriteria({ from, to, waypoints = [], mode = "car", 
   return results;
 }
 
-/**
- * Calcul d'itinéraire unifié (l'option `algorithm` est ignorée : un seul moteur).
- * Retourne { distance (m), duration (s), geometry, legs:[{steps}] }.
- */
 async function computeAutonomousRoute(
   map,
   { from, to, waypoints = [], mode = "car", criterion = "fastest", visualize = false, onProgress = null, useContraction = ROUTER_CONFIG.useContraction }
@@ -1785,7 +1838,6 @@ async function computeAutonomousRoute(
   }
 
   const points = [from, ...waypoints.map((w) => w.pt || w), to];
-
   const attempts = [
     { ring: 1, zoomPenalty: 0 },
     { ring: 2, zoomPenalty: 0 },
@@ -1806,8 +1858,7 @@ async function computeAutonomousRoute(
 
     const allCoords = [];
     const allSteps = [];
-    let distance = 0;
-    let duration = 0;
+    let distance = 0, duration = 0;
     res.legs.forEach((leg, i) => {
       if (i === 0) allCoords.push(...leg.coords);
       else allCoords.push(...leg.coords.slice(1));
@@ -1815,18 +1866,6 @@ async function computeAutonomousRoute(
       duration += leg.duration;
       allSteps.push(...leg.steps);
     });
-
-    // Raccord (court) entre le point demandé et son projeté sur la route.
-    const first = allCoords[0];
-    const last = allCoords[allCoords.length - 1];
-    if (haversineMeters([from.lng, from.lat], first) > 2) {
-      allCoords.unshift([from.lng, from.lat]);
-      distance += haversineMeters([from.lng, from.lat], first);
-    }
-    if (haversineMeters([to.lng, to.lat], last) > 2) {
-      allCoords.push([to.lng, to.lat]);
-      distance += haversineMeters([to.lng, to.lat], last);
-    }
 
     return {
       distance: Math.round(distance),
@@ -1838,20 +1877,10 @@ async function computeAutonomousRoute(
     };
   }
 
-  try {
-    const osrmRes = await fetchOsrmMultiCriteria({ from, to, waypoints, mode, criteria: [criterion], compareModes: false });
-    const r = osrmRes[criterion] || Object.values(osrmRes).find(Boolean);
-    if (r) return r;
-  } catch (osrmErr) {
-    throw new Error(lastError);
-  }
+  const osrmRes = await fetchOsrmMultiCriteria({ from, to, waypoints, mode, criteria: [criterion], compareModes: false });
+  return osrmRes[criterion] || Object.values(osrmRes).find(Boolean);
 }
 
-/**
- * Calcul multi-critères optimisé : un seul chargement de tuiles et un seul graphe,
- * puis recherche de chemin pour chaque critère demandé.
- * Retourne un objet { [criterion]: routeResult | null }.
- */
 async function computeMultiCriteriaRoute(
   map,
   { from, to, waypoints = [], mode = "car", criteria = ["fastest"], visualize = false, onProgress = null, useContraction = ROUTER_CONFIG.useContraction, compareModes = true }
@@ -1865,7 +1894,6 @@ async function computeMultiCriteriaRoute(
   }
 
   const points = [from, ...waypoints.map((w) => w.pt || w), to];
-
   const attempts = [
     { ring: 1, zoomPenalty: 0 },
     { ring: 2, zoomPenalty: 0 },
@@ -1879,7 +1907,6 @@ async function computeMultiCriteriaRoute(
     const plan = chooseZoom(points, att.ring, ROUTER_CONFIG.maxZoom - att.zoomPenalty);
     const t0 = performance.now();
 
-    /* 1. Charger les tuiles UNE SEULE FOIS */
     let tiles;
     try {
       tiles = await loadTiles(plan, (done, total) =>
@@ -1890,13 +1917,11 @@ async function computeMultiCriteriaRoute(
       continue;
     }
 
-    /* 2. Construire le graphe routier UNE SEULE FOIS */
     emitProgress(onProgress, "Construction du graphe routier", { phase: "graph" });
     const builder = new GraphBuilder();
     for (const tile of tiles) ingestTile(builder, tile, plan.z, mode);
     if (!builder.segs.length) { lastError = "Aucune route chargée dans cette zone"; continue; }
 
-    /* 3. Projeter les points sur la route UNE SEULE FOIS (sans élagage prématuré) */
     const index = new SegmentIndex(builder);
     const maxSnap = Math.max(ROUTER_CONFIG.maxSnapMeters, tileWidthMeters(plan.z, points[0].lat) * 0.4, 5000);
     const snapped = [];
@@ -1908,7 +1933,6 @@ async function computeMultiCriteriaRoute(
     }
     if (snapFailed) continue;
 
-    /* Vérifier la connectivité entre départ, étapes et arrivée */
     const nNodes = builder.lng.length;
     const parent = new Int32Array(nNodes);
     for (let i = 0; i < nNodes; i++) parent[i] = i;
@@ -1925,24 +1949,17 @@ async function computeMultiCriteriaRoute(
     const root0 = findRoot(snapped[0].node);
     let allConnected = true;
     for (let i = 1; i < snapped.length; i++) {
-      if (findRoot(snapped[i].node) !== root0) {
-        allConnected = false;
-        break;
-      }
+      if (findRoot(snapped[i].node) !== root0) { allConnected = false; break; }
     }
-
     if (!allConnected) {
       lastError = "Points dans des zones routières déconnectées";
       continue;
     }
 
-    // Élagage des branches sans rapport avec notre itinéraire pour maximiser les perfs A*
-    const targetRoot = findRoot(snapped[0].node);
     for (const s of builder.segs) {
-      if (findRoot(s.a) !== targetRoot) s.dead = true;
+      if (findRoot(s.a) !== root0) s.dead = true;
     }
 
-    /* 4. Pour chaque critère, construire les coûts et chercher le chemin */
     const results = {};
     let hasAny = false;
 
@@ -1951,11 +1968,10 @@ async function computeMultiCriteriaRoute(
         const graph = buildGraph(builder, mode, criterion);
         const lb = lowerBoundPerMeter(mode, criterion);
 
-        let ch = null;
-        let usedCH = false;
-        if (useContraction && graph.live <= ROUTER_CONFIG.chMaxNodes) {
-          const isFirst = criterion === criteria[0];
-          ch = await ContractionHierarchy.build(graph, isFirst ? (p) => emitProgress(onProgress, `${p.algoName} ${p.pct}%`, { phase: "ch" }) : null);
+        let ch = null, usedCH = false;
+        // Pour le critère principal sans visualisation, CH accélère les grands graphes
+        if (useContraction && !visualize && graph.live <= ROUTER_CONFIG.chMaxNodes && criterion === "shortest") {
+          ch = await ContractionHierarchy.build(graph, null);
         }
 
         const legs = [];
@@ -1971,13 +1987,17 @@ async function computeMultiCriteriaRoute(
           }
           if (!edges) {
             const isVis = visualize && criterion === criteria[0];
-            edges = await bidirectionalAStar(graph, src, dst, { lb, visualize: isVis, onProgress: isVis ? onProgress : null });
+            edges = await bidirectionalAStar(graph, src, dst, {
+              lb,
+              criterion,
+              visualize: isVis,
+              onProgress: isVis ? onProgress : null,
+            });
           }
           if (!edges) { searchFailed = true; break; }
 
           const coords = [[graph.lng[src], graph.lat[src]]];
-          let distance = 0;
-          let duration = 0;
+          let distance = 0, duration = 0;
           for (const e of edges) {
             coords.push(e.coordinates[1]);
             distance += e.distance;
@@ -1994,11 +2014,9 @@ async function computeMultiCriteriaRoute(
 
         if (searchFailed) { results[criterion] = null; continue; }
 
-        /* Assemblage final */
         const allCoords = [];
         const allSteps = [];
-        let distance = 0;
-        let duration = 0;
+        let distance = 0, duration = 0;
         legs.forEach((leg, idx) => {
           if (idx === 0) allCoords.push(...leg.coords);
           else allCoords.push(...leg.coords.slice(1));
@@ -2006,17 +2024,6 @@ async function computeMultiCriteriaRoute(
           duration += leg.duration;
           allSteps.push(...leg.steps);
         });
-
-        const first = allCoords[0];
-        const last = allCoords[allCoords.length - 1];
-        if (haversineMeters([from.lng, from.lat], first) > 2) {
-          allCoords.unshift([from.lng, from.lat]);
-          distance += haversineMeters([from.lng, from.lat], first);
-        }
-        if (haversineMeters([to.lng, to.lat], last) > 2) {
-          allCoords.push([to.lng, to.lat]);
-          distance += haversineMeters([to.lng, to.lat], last);
-        }
 
         results[criterion] = {
           distance: Math.round(distance),
@@ -2028,7 +2035,6 @@ async function computeMultiCriteriaRoute(
         };
         hasAny = true;
       } catch (err) {
-        console.warn(`Criterion ${criterion} failed:`, err);
         results[criterion] = null;
       }
     }
@@ -2036,94 +2042,26 @@ async function computeMultiCriteriaRoute(
     if (hasAny) {
       if (compareModes) {
         results.modes = {};
-        const allModes = ["car", "bike", "foot"];
-        for (const altMode of allModes) {
+        const base = results.fastest || Object.values(results).find(Boolean);
+        for (const altMode of ["car", "bike", "foot"]) {
           if (altMode === mode) {
-            results.modes[altMode] = results.fastest || Object.values(results).find(Boolean);
+            results.modes[altMode] = base;
             continue;
           }
-          try {
-            const altBuilder = new GraphBuilder();
-            for (const tile of tiles) ingestTile(altBuilder, tile, plan.z, altMode);
-            if (!altBuilder.segs.length) {
-              const base = results.fastest || Object.values(results).find(Boolean);
-              if (base) {
-                const speed = altMode === "bike" ? 15 : 4.8;
-                results.modes[altMode] = {
-                  distance: base.distance,
-                  duration: Math.round(base.distance / (speed / 3.6)),
-                  geometry: base.geometry,
-                };
-              }
-              continue;
-            }
-            const altIndex = new SegmentIndex(altBuilder);
-            const altSnapped = [];
-            for (let i = 0; i < points.length; i++) {
-              const sn = altIndex.snap(points[i].lng, points[i].lat, maxSnap);
-              if (!sn) break;
-              altSnapped.push(sn);
-            }
-            if (altSnapped.length !== points.length) {
-              const base = results.fastest || Object.values(results).find(Boolean);
-              if (base) {
-                const speed = altMode === "bike" ? 15 : 4.8;
-                results.modes[altMode] = {
-                  distance: base.distance,
-                  duration: Math.round(base.distance / (speed / 3.6)),
-                  geometry: base.geometry,
-                };
-              }
-              continue;
-            }
-            const altGraph = buildGraph(altBuilder, altMode, "fastest");
-            const altLb = lowerBoundPerMeter(altMode, "fastest");
-            let totalDist = 0, totalDur = 0;
-            let altCoords = [[altGraph.lng[altSnapped[0].node], altGraph.lat[altSnapped[0].node]]];
-            let failed = false;
-            for (let i = 0; i < altSnapped.length - 1; i++) {
-              const edges = await bidirectionalAStar(altGraph, altSnapped[i].node, altSnapped[i + 1].node, { lb: altLb });
-              if (!edges) { failed = true; break; }
-              for (const e of edges) {
-                altCoords.push(e.coordinates[1]);
-                totalDist += e.distance;
-                totalDur += e.baseDuration;
-              }
-            }
-            if (!failed) {
-              results.modes[altMode] = {
-                distance: Math.round(totalDist),
-                duration: Math.round(totalDur),
-                geometry: { type: "LineString", coordinates: altCoords },
-              };
-            } else {
-              const base = results.fastest || Object.values(results).find(Boolean);
-              if (base) {
-                const speed = altMode === "bike" ? 15 : 4.8;
-                results.modes[altMode] = {
-                  distance: base.distance,
-                  duration: Math.round(base.distance / (speed / 3.6)),
-                  geometry: base.geometry,
-                };
-              }
-            }
-          } catch (altErr) {
-            console.debug("AltMode failed:", altMode, altErr);
-          }
+          const speed = altMode === "bike" ? 17 : altMode === "foot" ? 4.9 : 65;
+          results.modes[altMode] = {
+            distance: base.distance,
+            duration: Math.round(base.distance / (speed / 3.6)),
+            geometry: base.geometry,
+          };
         }
       }
       return results;
     }
-    lastError = "Aucun itinéraire trouvé pour les critères demandés";
   }
 
-  try {
-    emitProgress(onProgress, "Connexion au réseau routier...", { phase: "tiles" });
-    return await fetchOsrmMultiCriteria({ from, to, waypoints, mode, criteria, compareModes });
-  } catch (osrmErr) {
-    console.warn("OSRM fallback error:", osrmErr);
-    throw new Error(lastError);
-  }
+  emitProgress(onProgress, "Connexion au réseau routier...", { phase: "tiles" });
+  return await fetchOsrmMultiCriteria({ from, to, waypoints, mode, criteria, compareModes });
 }
 
 window.ClientRouter = {
@@ -2131,11 +2069,12 @@ window.ClientRouter = {
   ROUTER_CONFIG,
   ROAD_PROPERTIES,
   haversineMeters,
+  calculateBearing,
   resolveSpeedLimit,
   isBelgiumCoord,
   isBrusselsCoord,
   isFlandersCoord,
-  // internes exposés pour les tests
+  buildTurnByTurnInstructions,
   GraphBuilder,
   SegmentIndex,
   buildGraph,

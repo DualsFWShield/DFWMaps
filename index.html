@@ -3,9 +3,9 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>Mon Maps · Navigation, OpenFreeMap 3D & Compteur Vitesse</title>
-  <meta name="description" content="Application cartographique moderne : OpenFreeMap clair, sombre et 3D, guidage avec compteur km/h et limites de vitesse réelles.">
-  <meta name="theme-color" content="#0f172a">
+  <title>Mon Maps · Navigation Cockpit 3D & Itinéraires Haute Précision</title>
+  <meta name="description" content="Navigation GPS pure et ultra-fluide : OpenFreeMap 3D, multi-itinéraires interactifs, cockpit de conduite avec guidage de voies et compteur de vitesse.">
+  <meta name="theme-color" content="#090d16">
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="icons/icon-192.png">
   <link rel="apple-touch-icon" href="icons/icon-180.png">
@@ -19,22 +19,22 @@
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <!-- Conteneur Carte -->
+  <!-- Conteneur Carte Plein Écran -->
   <div id="map"></div>
 
-  <!-- Barre de recherche supérieure style Google Maps (mode exploration) -->
+  <!-- Barre de recherche supérieure flottante (Mode Exploration) -->
   <div id="top-search-bar" class="search-bar-floating">
     <div class="search-input-pill">
       <div class="search-icon-wrap" aria-hidden="true">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round">
           <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
         </svg>
       </div>
-      <input id="quick-search-input" placeholder="Rechercher une adresse, un lieu…" autocomplete="off" aria-label="Rechercher une adresse">
+      <input id="quick-search-input" placeholder="Où allons-nous ?" autocomplete="off" aria-label="Rechercher une adresse ou une destination">
       <button id="quick-clear-btn" class="clear-btn" type="button" aria-label="Effacer la recherche" hidden>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M18 6L6 18M6 6l12 12"/></svg>
       </button>
-      <button id="theme-toggle-quick-btn" class="icon-btn-search" type="button" aria-label="Changer de thème (Clair / Sombre)" title="Changer de thème">
+      <button id="theme-toggle-quick-btn" class="icon-btn-search" type="button" aria-label="Changer de thème (Clair / Sombre)" title="Mode Clair / Sombre">
         <svg class="sun-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/>
         </svg>
@@ -42,32 +42,34 @@
           <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
         </svg>
       </button>
-      <button id="open-settings-quick-btn" class="icon-btn-search" type="button" aria-label="Paramètres de guidage et algorithme" title="Paramètres">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+      <button id="open-settings-quick-btn" class="icon-btn-search" type="button" aria-label="Paramètres" title="Paramètres de navigation">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round">
           <circle cx="12" cy="12" r="3"/>
           <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
         </svg>
       </button>
-      <button id="open-directions-btn" class="btn-directions-shortcut" type="button" title="Calculer un itinéraire">
+      <button id="open-directions-btn" class="btn-directions-shortcut" type="button" title="Planifier un trajet">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
           <polygon points="3 11 22 2 13 21 11 13 3 11" fill="currentColor"/>
         </svg>
-        <span>Itinéraire</span>
+        <span>Trajet</span>
       </button>
     </div>
+
     <ul id="quick-search-list" class="suggest" hidden></ul>
 
-    <!-- Chips de catégories rapides -->
+    <!-- Favoris & Catégories Essentielles (Zéro Bruit Social) -->
     <div class="quick-category-chips">
-      <button type="button" class="category-chip" data-query="restaurant">🍴 Restaurants</button>
-      <button type="button" class="category-chip" data-query="fuel">⛽ Carburant</button>
+      <button type="button" class="category-chip fav-chip" id="fav-home-chip" title="Aller à la Maison (clic droit pour modifier)">🏠 Maison</button>
+      <button type="button" class="category-chip fav-chip" id="fav-work-chip" title="Aller au Travail (clic droit pour modifier)">💼 Travail</button>
       <button type="button" class="category-chip" data-query="parking">🅿️ Parkings</button>
-      <button type="button" class="category-chip" data-query="hotel">🏨 Hôtels</button>
-      <button type="button" class="category-chip" data-query="supermarket">🛒 Boutiques</button>
+      <button type="button" class="category-chip" data-query="fuel">⛽ Stations</button>
+      <button type="button" class="category-chip" data-query="charging_station">⚡ Bornes EV</button>
+      <button type="button" class="category-chip" data-query="supermarket">🛒 Courses</button>
     </div>
   </div>
 
-  <!-- Panneau principal d'itinéraire (collapsible / réductible) -->
+  <!-- Panneau Principal d'Itinéraire (Architecture Fluide & Épurée) -->
   <section id="panel" class="route-panel" aria-label="Calcul d'itinéraire" hidden>
     <header class="panel-header">
       <div class="header-left">
@@ -77,12 +79,12 @@
           </svg>
         </button>
         <div class="brand-text">
-          <h1>Itinéraire</h1>
-          <span class="brand-badge">Multi-étapes & 3D</span>
+          <h1>Planificateur</h1>
+          <span class="brand-badge" id="algo-badge-status">⚡ Hybride CH / A*</span>
         </div>
       </div>
       <div class="header-actions">
-        <button id="cancel-route-btn" class="icon-btn danger-hover" type="button" aria-label="Annuler l'itinéraire" title="Annuler et effacer l'itinéraire">
+        <button id="cancel-route-btn" class="icon-btn danger-hover" type="button" aria-label="Réinitialiser l'itinéraire" title="Effacer le trajet">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
             <polyline points="3 6 5 6 21 6"/>
             <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
@@ -93,13 +95,13 @@
             <line x1="5" y1="12" x2="19" y2="12"/>
           </svg>
         </button>
-        <button id="open-settings-panel-btn" class="icon-btn" type="button" aria-label="Paramètres de l'itinéraire" title="Paramètres (Algorithme, Voix Piper...)">
+        <button id="open-settings-panel-btn" class="icon-btn" type="button" aria-label="Paramètres" title="Paramètres (Moteur, Voix, Affichage)">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
             <circle cx="12" cy="12" r="3"/>
             <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
           </svg>
         </button>
-        <button id="theme-toggle" class="icon-btn" type="button" aria-label="Changer de thème (Clair / Sombre)" title="Changer de thème (Clair / Sombre)">
+        <button id="theme-toggle" class="icon-btn" type="button" aria-label="Changer de thème" title="Mode Clair / Sombre">
           <svg class="sun-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/>
           </svg>
@@ -110,7 +112,7 @@
       </div>
     </header>
 
-    <!-- Zone des adresses avec support multi-étapes -->
+    <!-- Saisie Départ / Étapes / Destination -->
     <div class="route-inputs-card">
       <div class="timeline-connector" aria-hidden="true">
         <div class="connector-dot from-dot"></div>
@@ -122,12 +124,12 @@
         <!-- Départ -->
         <div class="field" id="field-from">
           <div class="input-wrapper">
-            <input id="from" placeholder="Départ…" autocomplete="off" aria-label="Point de départ">
+            <input id="from" placeholder="Point de départ…" autocomplete="off" aria-label="Point de départ">
             <button id="clear-from" class="clear-btn" type="button" aria-label="Effacer le départ" title="Effacer" hidden>
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M18 6L6 18M6 6l12 12"/></svg>
             </button>
           </div>
-          <button id="locate" class="field-action-btn" type="button" aria-label="Ma position actuelle" title="Ma position actuelle">
+          <button id="locate" class="field-action-btn" type="button" aria-label="Utiliser ma position actuelle" title="Ma position GPS">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
               <circle cx="12" cy="12" r="7"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/><circle cx="12" cy="12" r="2" fill="currentColor"/>
             </svg>
@@ -135,10 +137,10 @@
           <ul id="from-list" class="suggest" hidden></ul>
         </div>
 
-        <!-- Conteneur dynamique des étapes intermédiaires -->
+        <!-- Étapes intermédiaires -->
         <div id="waypoints-container"></div>
 
-        <!-- Bouton d'ajout d'étape -->
+        <!-- Actions rapides : Ajouter une étape -->
         <div class="waypoint-add-row">
           <button id="add-waypoint-btn" type="button" class="btn-add-step">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
@@ -148,7 +150,7 @@
           </button>
         </div>
 
-        <!-- Arrivée -->
+        <!-- Destination -->
         <div class="field" id="field-to">
           <div class="input-wrapper">
             <input id="to" placeholder="Destination…" autocomplete="off" aria-label="Destination finale">
@@ -166,7 +168,7 @@
       </div>
     </div>
 
-    <!-- Choix du mode de transport -->
+    <!-- Modes de déplacement -->
     <div id="modes" role="tablist" aria-label="Mode de transport">
       <button type="button" data-mode="car" role="tab" aria-pressed="true" aria-selected="true" class="mode-btn">
         <span class="mode-icon" aria-hidden="true">
@@ -200,7 +202,7 @@
       </button>
     </div>
 
-    <!-- Critères d'optimisation réels (Rapide, Court, Économique, Sans autoroute) -->
+    <!-- Sélecteur de variantes d'itinéraires (Style Apple Plans / Waze) -->
     <div id="criteria-selector" class="criteria-bar" hidden>
       <button type="button" class="criteria-btn" data-criterion="fastest" aria-pressed="true">
         <span class="crit-icon">⚡</span>
@@ -219,7 +221,7 @@
       <button type="button" class="criteria-btn" data-criterion="eco" aria-pressed="false">
         <span class="crit-icon">🌿</span>
         <div class="crit-details">
-          <b>Économique</b>
+          <b>Éco</b>
           <small id="crit-eco-sub">–</small>
         </div>
       </button>
@@ -232,33 +234,29 @@
       </button>
     </div>
 
-    <!-- Options du moteur hybride vectoriel & visualisation live -->
+    <!-- Contrôle rapide de visualisation algorithmique -->
     <div id="algo-controls-card" class="algo-controls-card" hidden>
-      <div class="algo-selector-row">
-        <label for="algo-criterion-select" class="algo-select-label">Optimisation :</label>
-        <select id="algo-criterion-select" class="algo-type-select" aria-label="Choisir le critère d'optimisation">
-          <option value="fastest" selected>⚡ Le plus rapide (Optimal)</option>
-          <option value="shortest">📏 Le plus court (Distance min)</option>
-          <option value="eco">🌿 Écologique (Carburant / CO₂)</option>
-          <option value="nohighway">🚫 Sans autoroute (Secondaires)</option>
-        </select>
-      </div>
       <div class="algo-row">
-        <label class="algo-switch-wrap" title="Afficher l'expansion des nœuds et le raisonnement du moteur vectoriel en direct sur la carte">
+        <label class="algo-switch-wrap" title="Afficher l'exploration du graphe routier en temps réel sur la carte">
           <input type="checkbox" id="algo-live-vis-toggle">
           <span class="switch-ui"></span>
-          <span class="switch-text">🧠 Visualiser le calcul en direct</span>
+          <span class="switch-text">🧠 Visualiser l'exploration A* en direct</span>
         </label>
-        <span class="algo-pill-badge" id="algo-badge-status">⚡ Hybride CH / A*</span>
+        <select id="algo-criterion-select" class="algo-type-select" aria-label="Critère d'optimisation">
+          <option value="fastest" selected>⚡ Rapide</option>
+          <option value="shortest">📏 Court</option>
+          <option value="eco">🌿 Éco</option>
+          <option value="nohighway">🚫 Hors autoroute</option>
+        </select>
       </div>
     </div>
 
-    <p id="status" role="status">Cherchez une adresse ou touchez la carte pour placer un point.</p>
+    <p id="status" role="status">Sélectionnez un point sur la carte ou tapez une destination.</p>
 
-    <!-- Fiche d'itinéraire calculé -->
+    <!-- Résumé Hero & Lancement du Guidage -->
     <div id="route-box" hidden>
       <div class="route-overview-card">
-        <div class="route-stats">
+        <div class="route-hero-top">
           <div class="stat-primary">
             <span id="route-duration-hero" class="duration-hero">--</span>
             <span id="route-eta-hero" class="eta-pill">Arrivée --:--</span>
@@ -269,26 +267,37 @@
           </div>
         </div>
 
+        <!-- Résumé de l'axe principal emprunté (ex: "Via E411 / A4 · Fluidité optimale") -->
+        <div id="route-via-summary" class="route-via-bar">
+          <span class="via-dot"></span>
+          <span id="route-via-text">Itinéraire optimal calculé</span>
+        </div>
+
         <div class="route-actions-row">
           <button id="start" type="button" class="btn-primary-action">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="start-icon" aria-hidden="true">
+              <polygon points="3 11 22 2 13 21 11 13 3 11" fill="currentColor"/>
+            </svg>
+            <span>Démarrer la conduite</span>
+          </button>
+          <button id="preview-sim-btn" type="button" class="btn-sim-action" title="Simuler le trajet en mode cockpit 3D" aria-label="Simuler le trajet">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round">
               <polygon points="5 3 19 12 5 21 5 3" fill="currentColor"/>
             </svg>
-            <span>Démarrer le guidage</span>
+            <span>Démo</span>
           </button>
-          <button id="cancel-route-action-btn" type="button" class="btn-cancel-action" title="Annuler ce trajet" aria-label="Annuler ce trajet">
+          <button id="cancel-route-action-btn" type="button" class="btn-cancel-action" title="Fermer ce trajet" aria-label="Annuler ce trajet">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
               <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
             </svg>
-            <span>Annuler</span>
           </button>
         </div>
       </div>
 
-      <!-- Tableau Comparatif (Modes & Critères : Temps, Km, Essence) -->
-      <details id="route-comparison-wrap" class="route-comparison-card" open>
+      <!-- Tableau Comparatif Synthétique -->
+      <details id="route-comparison-wrap" class="route-comparison-card">
         <summary class="route-comparison-header">
-          <span class="summary-label">📊 Comparatif des 4 critères & modes</span>
+          <span class="summary-label">📊 Comparatif détaillé des variantes</span>
           <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M6 9l6 6 6-6"/>
           </svg>
@@ -297,22 +306,21 @@
           <table class="comparison-table">
             <thead>
               <tr>
-                <th>Itinéraire</th>
-                <th>Temps</th>
+                <th>Variante</th>
+                <th>Durée</th>
                 <th>Distance</th>
-                <th>Essence / Énergie</th>
+                <th>Énergie</th>
               </tr>
             </thead>
-            <tbody id="comparison-table-body">
-              <!-- Rempli dynamiquement -->
-            </tbody>
+            <tbody id="comparison-table-body"></tbody>
           </table>
         </div>
       </details>
 
+      <!-- Feuille de route interactive (clic = aperçu du carrefour) -->
       <details id="steps-wrap">
         <summary id="summary">
-          <span class="summary-label">Feuille de route</span>
+          <span class="summary-label">Feuille de route détaillée</span>
           <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M6 9l6 6 6-6"/>
           </svg>
@@ -322,7 +330,7 @@
     </div>
   </section>
 
-  <!-- Carte réduite en bas d'écran (style Google Maps : permet de voir toute la carte) -->
+  <!-- Barre réduite en bas d'écran (Aperçu Pleine Carte) -->
   <div id="minimized-route-bar" class="minimized-bar" hidden>
     <div class="min-left">
       <span id="min-mode-icon" class="min-badge">🚗</span>
@@ -332,13 +340,13 @@
       </div>
     </div>
     <div class="min-right">
-      <button id="min-start-btn" type="button" class="btn-mini-start">Démarrer</button>
-      <button id="restore-panel-btn" type="button" class="icon-btn" title="Agrandir la fiche" aria-label="Agrandir la fiche">
+      <button id="min-start-btn" type="button" class="btn-mini-start">Go</button>
+      <button id="restore-panel-btn" type="button" class="icon-btn" title="Déplier les détails" aria-label="Déplier les détails">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
           <polyline points="18 15 12 9 6 15"/>
         </svg>
       </button>
-      <button id="min-cancel-btn" class="icon-btn danger-hover" type="button" title="Annuler le trajet" aria-label="Annuler le trajet">
+      <button id="min-cancel-btn" class="icon-btn danger-hover" type="button" title="Fermer le trajet" aria-label="Fermer le trajet">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
           <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
         </svg>
@@ -346,61 +354,101 @@
     </div>
   </div>
 
-  <!-- HUD de vitesse & Limitations en mode Drive (style Waze / Google Maps) -->
+  <!-- ======================================================================
+       MODE CONDUITE (COCKPIT PREMIUM : BANNIÈRE DOUBLE, VOIES, COMPTEUR SVG)
+       ====================================================================== -->
+
+  <!-- Bannière Supérieure de Guidage (Manœuvre + Voies + Cartouche Route + "Puis") -->
+  <div id="banner" aria-live="polite">
+    <div class="banner-main-row">
+      <div class="banner-icon-badge" id="banner-icon-wrap" aria-hidden="true">
+        <svg id="banner-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 19V5M5 12l7-7 7 7"/>
+        </svg>
+      </div>
+      <div class="banner-content">
+        <div class="banner-dist-line">
+          <b id="banner-dist">-- m</b>
+          <span id="banner-road-shield" class="road-shield" hidden>E411</span>
+        </div>
+        <span id="banner-text">Recherche du signal GPS…</span>
+      </div>
+    </div>
+
+    <!-- Assistant de Voies Dynamique (Lane Guidance style Apple Maps / Waze) -->
+    <div id="banner-lanes" class="banner-lanes-bar" hidden aria-label="Voies recommandées"></div>
+
+    <!-- Bandeau "Puis" (Anticipation de la manœuvre suivante immédiate) -->
+    <div id="banner-next-step" class="banner-next-bar" hidden>
+      <span class="next-label">Puis</span>
+      <span id="banner-next-icon" class="next-mini-icon" aria-hidden="true"></span>
+      <span id="banner-next-text" class="next-text">Continuez tout droit</span>
+    </div>
+  </div>
+
+  <!-- Bouton Flottant "Recentrer Caméra Cockpit" (Apparaît si l'utilisateur bouge la carte en conduite) -->
+  <button id="nav-resume-follow-btn" class="nav-resume-pill" type="button" hidden>
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+      <polygon points="3 11 22 2 13 21 11 13 3 11" fill="currentColor"/>
+    </svg>
+    <span>Recentrer le suivi</span>
+  </button>
+
+  <!-- HUD de Vitesse Vectoriel & Panneau Officiel de Limitation -->
   <div id="drive-hud" class="drive-hud-widget" aria-live="polite">
     <!-- Panneau circulaire officiel de limitation de vitesse -->
-    <div class="speed-limit-sign" id="speed-limit-badge" title="Vitesse maximale autorisée">
+    <div class="speed-limit-sign" id="speed-limit-badge" title="Limitation de vitesse en vigueur (cliquer pour tester)">
       <span id="speed-limit-val">80</span>
     </div>
-    <!-- Compteur digital km/h en temps réel -->
-    <div class="speedometer-pill" id="speedometer-pill" title="Vitesse actuelle GPS">
-      <span class="speed-number" id="current-speed-val">0</span>
-      <span class="speed-unit">km/h</span>
-    </div>
-  </div>
 
-  <!-- HUD de virage en direct (en haut) -->
-  <div id="banner" aria-live="polite">
-    <div class="banner-icon-badge" id="banner-icon-wrap" aria-hidden="true">
-      <svg id="banner-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M12 19V5M5 12l7-7 7 7"/>
+    <!-- Compteur de vitesse circulaire avec anneau de progression SVG -->
+    <div class="speedometer-gauge" id="speedometer-pill" title="Vitesse actuelle GPS">
+      <svg class="speed-ring-svg" viewBox="0 0 68 68" aria-hidden="true">
+        <circle class="speed-ring-bg" cx="34" cy="34" r="29"></circle>
+        <circle class="speed-ring-fill" id="speed-ring-fill" cx="34" cy="34" r="29"></circle>
       </svg>
+      <div class="speed-gauge-inner">
+        <span class="speed-number" id="current-speed-val">0</span>
+        <span class="speed-unit">km/h</span>
+      </div>
     </div>
-    <div class="banner-content">
-      <b id="banner-dist">-- m</b>
-      <span id="banner-text">En attente du signal GPS…</span>
+
+    <!-- Pilule de rue actuelle (affichée en bas à côté du compteur) -->
+    <div id="current-street-pill" class="current-street-pill">
+      <span class="street-dot"></span>
+      <span id="current-street-name">En route</span>
     </div>
   </div>
 
-  <!-- HUD de Visualisation de l'Algorithme A* en temps réel sur la carte -->
+  <!-- HUD de Visualisation de l'Algorithme A* en temps réel -->
   <div id="algo-vis-hud" class="algo-vis-hud" hidden aria-live="polite">
     <div class="algo-vis-header">
       <div class="algo-vis-title-wrap">
         <span class="algo-vis-pulse-dot" aria-hidden="true"></span>
-        <b>Recherche A* en direct</b>
+        <b>Exploration A* en direct</b>
       </div>
       <button id="algo-vis-skip-btn" type="button" class="btn-vis-skip" title="Terminer instantanément">⚡ Terminer</button>
     </div>
     <div class="algo-vis-stats">
       <div class="vis-stat-col">
-        <span class="vis-stat-label">Nœuds explorés</span>
+        <span class="vis-stat-label">Nœuds</span>
         <b class="vis-stat-num" id="vis-nodes-count">0</b>
       </div>
       <div class="vis-stat-col">
-        <span class="vis-stat-label">Frontière active</span>
+        <span class="vis-stat-label">Frontière</span>
         <b class="vis-stat-num" id="vis-frontier-count">0</b>
       </div>
       <div class="vis-stat-col">
-        <span class="vis-stat-label">Temps calcul</span>
+        <span class="vis-stat-label">Durée</span>
         <b class="vis-stat-num" id="vis-time-ms">0 ms</b>
       </div>
     </div>
   </div>
 
-  <!-- Dock Flottant Vertical Épuré (4 contrôles essentiels + Zoom desktop) -->
+  <!-- Dock Flottant Vertical sur la Carte -->
   <aside id="fab" aria-label="Contrôles cartographiques">
     <!-- Sélecteur de couches cartographiques -->
-    <button id="layers" class="fab-btn round" type="button" aria-pressed="false" title="Styles de cartes (OpenFreeMap, 3D, Satellite...)" aria-label="Choisir la couche cartographique">
+    <button id="layers" class="fab-btn round" type="button" aria-pressed="false" title="Styles de cartes (OpenFreeMap, 3D, Satellite)" aria-label="Styles de cartes">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <polygon points="12 2 2 7 12 12 22 7 12 2"/>
         <polyline points="2 17 12 22 22 17"/>
@@ -409,11 +457,11 @@
     </button>
 
     <!-- Bouton Bascule 3D / 2D -->
-    <button id="toggle-3d-btn" class="fab-btn round font-badge" type="button" title="Vue 3D bâtiments et relief" aria-label="Basculer la vue 3D">
+    <button id="toggle-3d-btn" class="fab-btn round font-badge" type="button" title="Basculer l'inclinaison 3D et bâtiments" aria-label="Basculer la vue 3D">
       <span>3D</span>
     </button>
 
-    <!-- Boussole avec aiguille orientable -->
+    <!-- Boussole dynamique -->
     <button id="compass-btn" class="fab-btn round compass-fab" type="button" title="Réaligner au Nord" aria-label="Réaligner au Nord">
       <svg id="compass-needle" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
         <circle cx="12" cy="12" r="10" stroke-width="1.5" stroke="var(--border-strong)"/>
@@ -423,7 +471,7 @@
       </svg>
     </button>
 
-    <!-- Zoom Desktop Unifié (Masqué sur mobile tactile pour alléger) -->
+    <!-- Zoom Desktop -->
     <div class="zoom-pill desktop-only" role="group" aria-label="Zoom de carte">
       <button id="zoom-in-btn" class="zoom-btn" type="button" title="Zoom avant" aria-label="Zoom avant">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
@@ -438,7 +486,7 @@
       </button>
     </div>
 
-    <!-- Bouton Recentrage & Suivi de position avec effet radar -->
+    <!-- Bouton Recentrage GPS -->
     <button id="recenter" class="fab-btn round fab-recenter" type="button" title="Centrer sur ma position" aria-label="Centrer sur ma position">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
         <circle cx="12" cy="12" r="10"/>
@@ -449,11 +497,11 @@
     </button>
   </aside>
 
-  <!-- Tiroir de sélection des cartes OpenFreeMap, 3D & Satellite Hybride -->
+  <!-- Tiroir des Styles de Cartes -->
   <dialog id="layers-modal" class="layers-sheet" aria-labelledby="layers-sheet-title">
     <div class="sheet-header">
-      <h2 id="layers-sheet-title">Styles de cartes</h2>
-      <button id="close-layers" type="button" class="clear-btn" aria-label="Fermer la sélection de cartes">
+      <h2 id="layers-sheet-title">Environnement Cartographique</h2>
+      <button id="close-layers" type="button" class="clear-btn" aria-label="Fermer">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M18 6L6 18M6 6l12 12"/></svg>
       </button>
     </div>
@@ -461,49 +509,49 @@
       <button type="button" class="layer-card is-active" data-layer-id="openfreemap">
         <span class="layer-icon">🗺️</span>
         <div class="layer-info">
-          <b>OpenFreeMap</b>
-          <small>Vectoriel haute précision (s'adapte au mode clair / sombre)</small>
+          <b>OpenFreeMap Vectoriel</b>
+          <small> Ultra-net, thème Clair / Sombre automatique</small>
         </div>
       </button>
       <button type="button" class="layer-card" data-layer-id="openfreemap-3d">
         <span class="layer-icon">🏢</span>
         <div class="layer-info">
-          <b>OpenFreeMap 3D (Bâtiments 3D)</b>
-          <small>Extrusions 3D en temps réel (s'adapte au mode clair / sombre)</small>
+          <b>OpenFreeMap 3D (Bâtiments)</b>
+          <small>Perspective inclinée et extrusions volumétriques</small>
         </div>
       </button>
       <button type="button" class="layer-card" data-layer-id="sat-hybrid">
         <span class="layer-icon">🛰️</span>
         <div class="layer-info">
-          <b>Satellite Hybride HD (Esri)</b>
-          <small>Imagerie satellite + Rues & Noms de lieux</small>
+          <b>Satellite Hybride HD</b>
+          <small>Imagerie aérienne Esri + réseau routier superposé</small>
         </div>
       </button>
       <button type="button" class="layer-card" data-layer-id="cyclosm">
         <span class="layer-icon">🚲</span>
         <div class="layer-info">
-          <b>CyclOSM (Vélo)</b>
-          <small>Pistes cyclables, voies vertes et dénivelé</small>
+          <b>CyclOSM</b>
+          <small>Pistes cyclables, voies vertes et relief</small>
         </div>
       </button>
       <button type="button" class="layer-card" data-layer-id="topo">
-        <span class="layer-icon">🧗</span>
+        <span class="layer-icon">⛰️</span>
         <div class="layer-info">
           <b>OpenTopoMap</b>
-          <small>Topographie et courbes de niveau</small>
+          <small>Courbes de niveau et sentiers</small>
         </div>
       </button>
       <button type="button" class="layer-card" data-layer-id="osm">
         <span class="layer-icon">🌍</span>
         <div class="layer-info">
-          <b>OpenStreetMap Standard</b>
-          <small>OpenStreetMap classique mondial</small>
+          <b>OpenStreetMap Classique</b>
+          <small>Rendu cartographique standard mondial</small>
         </div>
       </button>
     </div>
   </dialog>
 
-  <!-- Modal des Paramètres (Choix Algorithme d'itinéraire & Voix Piper TTS) -->
+  <!-- Modal des Paramètres -->
   <dialog id="settings-modal" class="settings-modal-dialog" aria-labelledby="settings-dialog-title">
     <div class="modal-card">
       <div class="sheet-header">
@@ -520,22 +568,22 @@
       </div>
 
       <div class="settings-modal-content">
-        <!-- 1. Moteur d'itinéraire vectoriel unique -->
+        <!-- 1. Moteur d'itinéraire -->
         <div class="settings-section">
           <div class="section-title-row">
-            <span class="section-badge">Moteur Unique</span>
-            <h3>Moteur Hybride Vectoriel 100% Local</h3>
+            <span class="section-badge">Routage</span>
+            <h3>Moteur Hybride Vectoriel</h3>
             <span class="engine-badge live-ok">⚡ CH + A* Bidirectionnel</span>
           </div>
-          <p class="section-desc">Calcul d'itinéraire haute performance sur tuiles vectorielles OpenFreeMap décompressées localement (graphe routier réel, respect des sens uniques & raccord précis sans ligne droite).</p>
-          
+          <p class="section-desc">Calcul local sur tuiles vectorielles OpenFreeMap avec respect des sens uniques, vitesses réelles (Belgique / France) et projection exacte sur le réseau.</p>
+
           <div class="setting-field-group">
-            <label for="settings-criterion-select" class="setting-label">Critère d'optimisation par défaut :</label>
+            <label for="settings-criterion-select" class="setting-label">Préférence d'itinéraire par défaut :</label>
             <select id="settings-criterion-select" class="custom-select">
               <option value="fastest" selected>⚡ Le plus rapide (Optimal · Recommandé)</option>
-              <option value="shortest">📏 Le plus court (Distance kilométrique minimale)</option>
-              <option value="eco">🌿 Écologique (Économie de carburant & émissions CO₂)</option>
-              <option value="nohighway">🚫 Sans autoroute (Routes nationales & secondaires)</option>
+              <option value="shortest">📏 Le plus court (Distance minimale)</option>
+              <option value="eco">🌿 Écologique (Économie de carburant & CO₂)</option>
+              <option value="nohighway">🚫 Sans autoroute (Réseau secondaire)</option>
             </select>
           </div>
 
@@ -543,35 +591,34 @@
             <input type="checkbox" id="settings-ch-toggle" checked>
             <span class="checkbox-text">
               <b>Accélération Contraction Hierarchies (CH)</b>
-              <small>Prétraitement hiérarchique pour une recherche instantanée même sur de longs trajets.</small>
+              <small>Prétraitement hiérarchique pour une recherche quasi-instantanée.</small>
             </span>
           </label>
 
           <label class="setting-checkbox-row">
             <input type="checkbox" id="settings-vis-toggle">
             <span class="checkbox-text">
-              <b>Visualiser le raisonnement de l'algorithme en direct</b>
-              <small>Affiche les tuiles vectorielles et les nœuds explorés par le moteur sur la carte.</small>
+              <b>Visualiser l'exploration algorithmique en direct</b>
+              <small>Affiche les branches évaluées et la frontière A* sur la carte.</small>
             </span>
           </label>
         </div>
 
-        <!-- 2. Synthèse Vocale & Voix réelles du système -->
+        <!-- 2. Synthèse Vocale -->
         <div class="settings-section">
           <div class="section-title-row">
-            <span class="section-badge">Synthèse Vocale</span>
+            <span class="section-badge">Audio</span>
             <h3>Voix de Guidage GPS</h3>
             <span id="voice-engine-badge" class="engine-badge web-hd">✨ Voix HD Naturelle</span>
           </div>
-          <p class="section-desc">Sélectionnez parmi les vraies voix installées sur votre système (voix belges, françaises et modèles neuronaux) :</p>
 
           <div class="setting-field-group">
-            <label for="settings-voice-select" class="setting-label">Profil vocal actif :</label>
+            <label for="settings-voice-select" class="setting-label">Voix système ou neuronale :</label>
             <div class="voice-picker-row">
               <select id="settings-voice-select" class="custom-select">
                 <option value="" disabled selected>Détection des voix disponibles…</option>
               </select>
-              <button id="test-voice-btn" type="button" class="btn-voice-test" title="Écouter un extrait de la voix choisie">
+              <button id="test-voice-btn" type="button" class="btn-voice-test" title="Écouter un exemple">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
                   <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
                   <path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"/>
@@ -587,7 +634,7 @@
           <div class="sliders-grid">
             <div class="slider-field">
               <div class="slider-header">
-                <span>Vitesse d'élocution</span>
+                <span>Cadence vocale</span>
                 <span id="voice-rate-label" class="slider-val">1.00x</span>
               </div>
               <input type="range" id="voice-rate-slider" min="0.8" max="1.3" step="0.05" value="1.0">
@@ -595,7 +642,7 @@
 
             <div class="slider-field">
               <div class="slider-header">
-                <span>Tonalité vocale</span>
+                <span>Timbre / Hauteur</span>
                 <span id="voice-pitch-label" class="slider-val">1.00</span>
               </div>
               <input type="range" id="voice-pitch-slider" min="0.85" max="1.15" step="0.05" value="1.0">
@@ -603,26 +650,26 @@
           </div>
         </div>
 
-        <!-- 3. Annonces & Ronds-points -->
+        <!-- 3. Préférences Cockpit -->
         <div class="settings-section">
           <div class="section-title-row">
-            <span class="section-badge">Annonces</span>
-            <h3>Détails du Guidage Vocal</h3>
+            <span class="section-badge">Cockpit</span>
+            <h3>Conduite & Annonces</h3>
           </div>
 
           <label class="setting-checkbox-row">
             <input type="checkbox" id="settings-announce-roundabouts" checked>
             <span class="checkbox-text">
-              <b>Annoncer les ronds-points avec numéro de sortie exact</b>
-              <small>Ex: « Au rond-point, prenez la 2e sortie sur la rue de Paris »</small>
+              <b>Annoncer le numéro de sortie exact aux ronds-points</b>
+              <small>Ex: « Au rond-point, prenez la 2e sortie sur l'avenue Louise »</small>
             </span>
           </label>
 
           <label class="setting-checkbox-row">
             <input type="checkbox" id="settings-announce-carrefours" checked>
             <span class="checkbox-text">
-              <b>Citer les carrefours, bifurcations et bretelles d'accès</b>
-              <small>Ex: « Au carrefour, tournez à droite », « Prenez la bretelle d'accès vers l'A 10 »</small>
+              <b>Guidage de voies & anticipation du virage suivant</b>
+              <small>Affiche les voies recommandées et le bandeau « Puis » lors de manœuvres rapprochées.</small>
             </span>
           </label>
         </div>
@@ -630,19 +677,40 @@
     </div>
   </dialog>
 
-  <!-- Barre de navigation inférieure lors du guidage -->
+  <!-- Barre Inférieure du Cockpit de Conduite (Progression + ETA + Contrôles Directs) -->
   <div id="navbar">
-    <div class="navbar-eta-card">
-      <div id="eta">--:--</div>
-      <div class="eta-sub" id="eta-sub">Calcul…</div>
+    <!-- Jauge fine de progression globale du trajet -->
+    <div class="nav-progress-track" aria-hidden="true">
+      <div id="nav-progress-fill" class="nav-progress-fill"></div>
     </div>
+
+    <div class="navbar-eta-card">
+      <div class="eta-main-line">
+        <span id="eta">--:--</span>
+        <span id="eta-remaining-badge" class="eta-rem-pill">-- min</span>
+      </div>
+      <div class="eta-sub" id="eta-sub">Calcul de l'itinéraire…</div>
+    </div>
+
     <div class="navbar-controls">
-      <button id="sim-btn" class="fab-btn round" type="button" aria-pressed="false" aria-label="Simuler la conduite" title="Simuler la conduite (mode démo en direct)">
+      <!-- Vue d'ensemble du trajet / Retour vue cockpit 3D -->
+      <button id="nav-overview-btn" class="fab-btn round" type="button" aria-pressed="false" aria-label="Vue d'ensemble du trajet" title="Basculer entre vue Cockpit 3D et vue complète du trajet">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/>
+          <line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/>
+        </svg>
+      </button>
+
+      <!-- Bouton Simulation + Vitesse de simulation (1x / 3x / 8x) -->
+      <button id="sim-btn" class="fab-btn round sim-control-btn" type="button" aria-pressed="false" aria-label="Simuler la conduite" title="Lancer / Accélérer la simulation (1x, 3x, 8x)">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <polygon points="5 3 19 12 5 21 5 3" fill="currentColor"/>
         </svg>
+        <small id="sim-speed-tag" class="sim-speed-tag" hidden>1x</small>
       </button>
-      <button id="mute" class="fab-btn round" type="button" aria-pressed="true" aria-label="Guidage vocal" title="Guidage vocal">
+
+      <!-- Audio Mute / Unmute -->
+      <button id="mute" class="fab-btn round" type="button" aria-pressed="true" aria-label="Guidage vocal" title="Activer / Couper la voix">
         <svg class="sound-on" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
           <path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"/>
@@ -652,11 +720,13 @@
           <line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/>
         </svg>
       </button>
+
+      <!-- Arrêter le guidage -->
       <button id="stop" type="button" class="btn-stop-nav">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/>
         </svg>
-        <span>Arrêter</span>
+        <span>Fin</span>
       </button>
     </div>
   </div>
