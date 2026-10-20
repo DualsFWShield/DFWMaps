@@ -442,6 +442,7 @@ map.on("click", "route-alt-line", (e) => {
   if (crit && state.routeCandidates[crit]) {
     e.preventDefault();
     state.criterion = crit;
+    state.activeRoute = state.routeCandidates[crit];
     updateCriteriaUI();
     showCurrentRoute(false);
     renderComparisonTable(state.routeCandidates, state.routeModes);
@@ -1367,6 +1368,7 @@ async function computeRoutes() {
   const pts = getAllActivePoints();
   if (pts.length < 2) return;
 
+  state.activeRoute = null;
   say("Calcul des itinéraires haute précision…");
   $("route-box").hidden = true;
   $("criteria-selector").hidden = true;
@@ -1426,6 +1428,7 @@ async function computeRoutes() {
 
     state.routeCandidates = { fastest, shortest, eco, nohighway };
     state.routeModes = routes?.modes || {};
+    state.activeRoute = state.routeCandidates[state.criterion] || fastest;
   } catch (err) {
     say(err?.message && err.message.length < 90 ? err.message : "Aucun itinéraire routier trouvé.");
     return;
@@ -1477,7 +1480,7 @@ function computeFuelDetails(distanceMeters, criterion = "fastest", mode = "car")
   if (mode !== "car") {
     const kcal = Math.round(km * (mode === "bike" ? 28 : 65));
     const co2SavedKg = (km * 0.125).toFixed(1);
-    return { litres: 0, eur: 0, fuelStr: "0 L", ecoMeta: `${kcal} kcal · -${co2SavedKg} kg CO₂` };
+    return { litres: 0, eur: 0, fuelStr: `${kcal} kcal`, ecoMeta: `${kcal} kcal · -${co2SavedKg} kg CO₂` };
   }
 
   let rate = 0.064;
@@ -1491,6 +1494,7 @@ function computeFuelDetails(distanceMeters, criterion = "fastest", mode = "car")
     litres,
     eur,
     fuelStr: `${litres.toFixed(1)} L (${eur.toFixed(1)} €)`,
+    ecoMeta: `${litres.toFixed(1)} L · ${eur.toFixed(1)} €`,
   };
 }
 
@@ -1500,37 +1504,65 @@ function renderComparisonTable(candidates, modes) {
   tbody.replaceChildren();
 
   const rows = [];
-  const carVariants = [
-    { key: "fastest", badge: `<span class="table-badge fastest">⚡ Rapide</span>` },
-    { key: "shortest", badge: `<span class="table-badge shortest">📏 Court</span>` },
-    { key: "eco", badge: `<span class="table-badge eco">🌿 Éco</span>` },
-    { key: "nohighway", badge: `<span class="table-badge nohighway">🚫 Hors autoroute</span>` },
-  ];
+  const variantLabels = {
+    car: [
+      { key: "fastest", badge: `<span class="table-badge fastest">⚡ Rapide</span>` },
+      { key: "shortest", badge: `<span class="table-badge shortest">📏 Court</span>` },
+      { key: "eco", badge: `<span class="table-badge eco">🌿 Éco</span>` },
+      { key: "nohighway", badge: `<span class="table-badge nohighway">🚫 Hors autoroute</span>` },
+    ],
+    bike: [
+      { key: "fastest", badge: `<span class="table-badge bike">⚡ Vélo rapide</span>` },
+      { key: "shortest", badge: `<span class="table-badge shortest">📏 Vélo court</span>` },
+      { key: "eco", badge: `<span class="table-badge eco">🌿 Pistes cyclables</span>` },
+      { key: "nohighway", badge: `<span class="table-badge nohighway">🍃 Rues calmes</span>` },
+    ],
+    foot: [
+      { key: "fastest", badge: `<span class="table-badge foot">⚡ Piéton rapide</span>` },
+      { key: "shortest", badge: `<span class="table-badge foot">📏 Piéton court</span>` },
+    ],
+  };
 
-  for (const v of carVariants) {
+  const activeVariants = variantLabels[state.mode] || variantLabels.car;
+  for (const v of activeVariants) {
     const r = candidates[v.key];
     if (r) {
-      const fuel = computeFuelDetails(r.distance, v.key, "car");
-      rows.push({ mode: "car", criterion: v.key, badge: v.badge, dur: r.duration, dist: r.distance, fuel: fuel.fuelStr });
+      const fuel = computeFuelDetails(r.distance, v.key, state.mode);
+      rows.push({
+        mode: state.mode,
+        criterion: v.key,
+        badge: v.badge,
+        dur: r.duration,
+        dist: r.distance,
+        fuel: state.mode === "car" ? fuel.fuelStr : fuel.ecoMeta,
+      });
     }
   }
 
-  const bikeR = modes?.bike || (state.mode === "bike" ? candidates.fastest : null);
-  if (bikeR) {
-    const fuel = computeFuelDetails(bikeR.distance, "fastest", "bike");
-    rows.push({ mode: "bike", criterion: "fastest", badge: `<span class="table-badge bike">🚲 Vélo</span>`, dur: bikeR.duration, dist: bikeR.distance, fuel: fuel.ecoMeta });
-  }
-
-  const footR = modes?.foot || (state.mode === "foot" ? candidates.fastest : null);
-  if (footR) {
-    const fuel = computeFuelDetails(footR.distance, "fastest", "foot");
-    rows.push({ mode: "foot", criterion: "fastest", badge: `<span class="table-badge foot">🚶 À pied</span>`, dur: footR.duration, dist: footR.distance, fuel: fuel.ecoMeta });
+  for (const altMode of ["car", "bike", "foot"]) {
+    if (altMode === state.mode) continue;
+    const r = modes?.[altMode];
+    if (!r) continue;
+    const badgeMap = {
+      car: `<span class="table-badge fastest">🚗 Voiture</span>`,
+      bike: `<span class="table-badge bike">🚲 Vélo</span>`,
+      foot: `<span class="table-badge foot">🚶 À pied</span>`,
+    };
+    const fuel = computeFuelDetails(r.distance, "fastest", altMode);
+    rows.push({
+      mode: altMode,
+      criterion: "fastest",
+      badge: badgeMap[altMode],
+      dur: r.duration,
+      dist: r.distance,
+      fuel: altMode === "car" ? fuel.fuelStr : fuel.ecoMeta,
+    });
   }
 
   for (const row of rows) {
     const tr = document.createElement("tr");
     tr.className = "clickable-row";
-    if (state.mode === row.mode && (row.mode !== "car" || state.criterion === row.criterion)) {
+    if (state.mode === row.mode && state.criterion === row.criterion) {
       tr.classList.add("is-selected");
     }
     tr.innerHTML = `
@@ -1540,18 +1572,23 @@ function renderComparisonTable(candidates, modes) {
       <td><small>${row.fuel}</small></td>
     `;
     tr.addEventListener("click", () => {
-      if (row.mode !== state.mode) {
-        state.mode = row.mode;
-        document.querySelectorAll("#modes button").forEach((b) => {
-          const isSel = b.dataset.mode === state.mode;
-          b.setAttribute("aria-pressed", String(isSel));
-          b.setAttribute("aria-selected", String(isSel));
-        });
-      }
+      const modeChanged = row.mode !== state.mode;
+      state.mode = row.mode;
       state.criterion = row.criterion;
-      updateCriteriaUI();
-      showCurrentRoute(false);
-      renderComparisonTable(state.routeCandidates, state.routeModes);
+      state.activeRoute = null;
+      for (const b of document.querySelectorAll("#modes button")) {
+        const isSel = b.dataset.mode === state.mode;
+        b.setAttribute("aria-pressed", String(isSel));
+        b.setAttribute("aria-selected", String(isSel));
+      }
+      if (modeChanged) {
+        computeRoutes();
+      } else {
+        state.activeRoute = state.routeCandidates?.[state.criterion] || state.routeCandidates?.fastest;
+        updateCriteriaUI();
+        showCurrentRoute(false);
+        renderComparisonTable(state.routeCandidates, state.routeModes);
+      }
     });
     tbody.appendChild(tr);
   }
@@ -1561,11 +1598,24 @@ function updateCriteriaUI() {
   document.querySelectorAll(".criteria-btn").forEach((btn) => {
     btn.setAttribute("aria-pressed", String(btn.dataset.criterion === state.criterion));
   });
+  const noHwBtn = document.querySelector('.criteria-btn[data-criterion="nohighway"]');
+  if (noHwBtn) {
+    if (state.mode === "foot") {
+      noHwBtn.hidden = true;
+    } else {
+      noHwBtn.hidden = false;
+      const titleEl = noHwBtn.querySelector("b");
+      if (titleEl) {
+        titleEl.textContent = state.mode === "bike" ? "Rues calmes" : "Hors autoroute";
+      }
+    }
+  }
 }
 
 document.querySelectorAll(".criteria-btn").forEach((btn) => {
   btn.addEventListener("click", () => {
     state.criterion = btn.dataset.criterion;
+    state.activeRoute = state.routeCandidates?.[state.criterion] || state.routeCandidates?.fastest;
     updateCriteriaUI();
     showCurrentRoute(false);
     renderComparisonTable(state.routeCandidates, state.routeModes);
@@ -1586,8 +1636,16 @@ function extractMainViaSummary(steps) {
   return `Via ${topNames}`;
 }
 
-function showCurrentRoute(fit = false) {
-  const r = state.activeRoute || state.routeCandidates?.[state.criterion] || state.routeCandidates?.fastest;
+function showCurrentRoute(fit = false, forcedRoute = null) {
+  if (forcedRoute) {
+    state.activeRoute = forcedRoute;
+  } else {
+    state.activeRoute = (state.criterion && state.routeCandidates?.[state.criterion])
+      || state.routeCandidates?.fastest
+      || Object.values(state.routeCandidates || {}).find(Boolean)
+      || state.activeRoute;
+  }
+  const r = state.activeRoute;
   if (!r) return;
 
   state.activeRoute = r;
@@ -1698,7 +1756,9 @@ function showCurrentRoute(fit = false) {
 
 for (const b of document.querySelectorAll("#modes button")) {
   b.addEventListener("click", () => {
+    if (state.mode === b.dataset.mode && state.activeRoute) return;
     state.mode = b.dataset.mode;
+    state.activeRoute = null;
     for (const btn of document.querySelectorAll("#modes button")) {
       const isSel = btn.dataset.mode === state.mode;
       btn.setAttribute("aria-pressed", String(isSel));
@@ -1723,6 +1783,9 @@ const nav = {
   said: new Set(),
   lastPos: null,
   lastBearing: 0,
+  lastSpeakTime: 0,
+  lastStepIndex: -1,
+  lastAnnouncedKey: "",
 };
 
 function loadRoute(r) {
@@ -1802,15 +1865,24 @@ function updateLiveRouteSplit(snapped) {
 
 function speak(text, force = false) {
   if (!nav.voice) return;
-  if (window.PiperTTS && typeof window.PiperTTS.speak === "function") {
-    window.PiperTTS.speak(text, { force });
+  const now = Date.now();
+  if (!force && nav.lastAnnouncedKey && nav.lastAnnouncedKey === text && now - (nav.lastSpeakTime || 0) < 4000) {
     return;
   }
-  if (!window.speechSynthesis) return;
-  const u = new SpeechSynthesisUtterance(text);
-  u.lang = "fr-FR";
-  speechSynthesis.cancel();
-  speechSynthesis.speak(u);
+  if (!force && now - (nav.lastSpeakTime || 0) < 1200) {
+    // Avoid double speak bursts
+    return;
+  }
+  if (window.PiperTTS && typeof window.PiperTTS.speak === "function") {
+    window.PiperTTS.speak(text, { force });
+  } else if (window.speechSynthesis) {
+    const u = new SpeechSynthesisUtterance(text);
+    u.lang = "fr-FR";
+    speechSynthesis.cancel();
+    speechSynthesis.speak(u);
+  }
+  nav.lastSpeakTime = now;
+  nav.lastAnnouncedKey = text;
 }
 
 async function requestWake() {
@@ -2020,8 +2092,11 @@ function startNav() {
     overviewMode: false,
     off: 0,
     rerouting: false,
+    said: new Set(),
+    lastStepIndex: -1,
+    lastSpeakTime: 0,
+    lastAnnouncedKey: "",
   });
-  nav.said.clear();
   simDistance = 0;
 
   // Masquer les tracés alternatifs pour une lisibilité totale en conduite
@@ -2061,12 +2136,14 @@ function startNav() {
   // Annonce vocale d'accueil
   if (nav.steps[0]?.maneuver?.instruction) {
     speak(`Départ. ${nav.steps[0].maneuver.instruction}`, true);
+  } else {
+    speak("Départ. Suivez l'itinéraire.", true);
   }
 
   if (navigator.geolocation) {
     nav.watch = navigator.geolocation.watchPosition(onFix, onFixError, {
       enableHighAccuracy: true,
-      maximumAge: 1000,
+      maximumAge: 500,
       timeout: 15000,
     });
   }
@@ -2157,10 +2234,14 @@ function onFix(p) {
   const toNext = Math.max(0, (nav.ends[i] || 0) - s.along);
   const instructionText = next?.maneuver?.instruction || (next?.name ? `Prenez ${next.name}` : "Continuez tout droit");
 
-  // Nom de la rue actuelle dans la pilule inférieure
+  // Nom de la rue actuelle dans la pilule inférieure (utilise la rue effectivement empruntée ou la plus proche en avant)
   const streetEl = $("current-street-name");
   if (streetEl) {
-    streetEl.textContent = currentStep?.name && currentStep.name !== "Route" ? currentStep.name : "Sur l'itinéraire";
+    let streetName = currentStep?.name && currentStep.name !== "Route" ? currentStep.name : (next?.name && next.name !== "Route" ? next.name : "Sur l'itinéraire");
+    if (next?.name && next.name !== "Route" && toNext > 150) {
+      streetName = next.name;
+    }
+    streetEl.textContent = streetName;
   }
 
   // Limitation de vitesse et jauge circulaire SVG
@@ -2201,30 +2282,47 @@ function onFix(p) {
     }
   }
 
-  // Annonces vocales progressives (800m sur voie rapide, 300m, puis 60m)
+  // Annonces vocales progressives (détecte rond-point et espace les annonces pour éviter double)
   if (nav.voice && next && toNext > 0) {
     const stepKey = `step-${i}`;
+    const maneuverType = next?.maneuver?.type || "";
+    const isRoundabout = maneuverType === "roundabout" || maneuverType === "rotary";
     const now = Date.now();
     const elapsed = now - (nav.lastSpeakTime || 0);
 
-    if (speedKmh > 85 && toNext <= 850 && toNext > 600 && !nav.said.has(`${stepKey}-800`)) {
-      if (elapsed > 4000) {
-        nav.said.add(`${stepKey}-800`);
-        nav.lastSpeakTime = now;
-        speak(`Dans 800 mètres, ${instructionText}`);
+    if (isRoundabout) {
+      const exit = next?.maneuver?.exit || 1;
+      if (toNext <= 220 && toNext > 80 && !nav.said.has(`${stepKey}-r200`)) {
+        if (elapsed > 2000) {
+          nav.said.add(`${stepKey}-r200`);
+          speak(`Dans 200 mètres, prenez la ${exit === 1 ? "première" : exit === 2 ? "deuxième" : exit === 3 ? "troisième" : exit + "e"} sortie du rond-point.`);
+          return;
+        }
+      } else if (toNext <= 80 && toNext > 15 && !nav.said.has(`${stepKey}-r60`)) {
+        if (elapsed > 1500) {
+          nav.said.add(`${stepKey}-r60`);
+          speak(`Prenez la ${exit === 1 ? "première" : exit === 2 ? "deuxième" : exit === 3 ? "troisième" : exit + "e"} sortie du rond-point.`);
+          return;
+        }
       }
-    } else if (toNext <= 320 && toNext > 120 && !nav.said.has(`${stepKey}-300`)) {
-      if (elapsed > 3500) {
-        nav.said.add(`${stepKey}-300`);
-        nav.lastSpeakTime = now;
-        speak(`Dans 300 mètres, ${instructionText}`);
-      }
-    } else if (toNext <= 65 && toNext > 10 && !nav.said.has(`${stepKey}-now`)) {
-      if (elapsed > 2500) {
-        nav.said.add(`${stepKey}-now`);
-        nav.lastSpeakTime = now;
-        speak(instructionText);
-      }
+    }
+
+    if (speedKmh > 90 && toNext <= 900 && toNext > 650 && !nav.said.has(`${stepKey}-900`) && elapsed > 4500) {
+      nav.said.add(`${stepKey}-900`);
+      speak(`Dans 900 mètres, ${instructionText}`);
+      return;
+    } else if (toNext <= 400 && toNext > 200 && !nav.said.has(`${stepKey}-400`) && elapsed > 3500) {
+      nav.said.add(`${stepKey}-400`);
+      speak(`Dans 400 mètres, ${instructionText}`);
+      return;
+    } else if (toNext <= 150 && toNext > 40 && !nav.said.has(`${stepKey}-150`) && elapsed > 2500) {
+      nav.said.add(`${stepKey}-150`);
+      speak(`Dans 150 mètres, ${instructionText}`);
+      return;
+    } else if (toNext <= 70 && toNext > 10 && !nav.said.has(`${stepKey}-now`) && elapsed > 2000) {
+      nav.said.add(`${stepKey}-now`);
+      speak(instructionText);
+      return;
     }
   }
 
@@ -2445,7 +2543,8 @@ function handleCriterionChange(newCriterion) {
   safeStorage.setItem("mon_maps_criterion", newCriterion);
   syncAlgoUI();
   updateCriteriaUI();
-  if (state.routeCandidates[newCriterion]) {
+  if (state.routeCandidates && state.routeCandidates[newCriterion]) {
+    state.activeRoute = state.routeCandidates[newCriterion];
     showCurrentRoute(false);
     renderComparisonTable(state.routeCandidates, state.routeModes);
   } else {

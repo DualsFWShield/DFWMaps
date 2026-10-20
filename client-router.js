@@ -1455,10 +1455,10 @@ function buildTurnByTurnInstructions(arg1, arg2, arg3, arg4 = "car") {
         totalRDist += edges[rIdx].distance;
         totalRDur += edges[rIdx].baseDuration;
         const rNode = edges[rIdx].to;
-        if (graph && rIdx < edges.length - 1 && edges[rIdx + 1].isRoundabout) {
-          // Vérifier s'il existe au moins un arc sortant de rNode qui quitte le rond-point
-          const hasTrueExit = (graph.out[rNode] || []).some((e) => !e.isRoundabout && e.to !== edges[rIdx].from);
-          if (hasTrueExit) exitCount++;
+        if (graph && rIdx < edges.length - 1 && !edges[rIdx + 1].isRoundabout) {
+          const outFromR = graph.out[rNode] || [];
+          const exits = outFromR.filter((e) => !e.isRoundabout && e.to !== edges[rIdx].from);
+          if (exits.length >= 1) exitCount++;
         }
         rIdx++;
       }
